@@ -145,6 +145,7 @@ card := strings.ReplaceAll(r.FormValue("card"), " ", "")
 xAuthToken := r.FormValue("xAuthToken")
 bearerToken := r.FormValue("bearerToken")
 hppContent := r.FormValue("hpp")
+hppUserAgent := strings.TrimSpace(r.FormValue("hppUserAgent"))
 
 // ── Card validation ────────────────────────────────────────────────────────
 parts := strings.Split(card, "|")
@@ -217,7 +218,7 @@ return
 }
 
 // ── Full payment flow ────────────────────────────────────────────────────
-ok, msg, itin, err := processManualPayment(tlsClient, jar, xAuthToken, bearerToken, hppContent, cardNumber, month, year)
+ok, msg, itin, err := processManualPayment(tlsClient, jar, xAuthToken, bearerToken, hppContent, hppUserAgent, cardNumber, month, year)
 if err != nil {
 result := payResp{false, "Payment error: " + err.Error(), "", "", "", "", "", "", "", 0}
 dbLogTransaction(licenseID, cardMasked, "error", "", "", result.Message)

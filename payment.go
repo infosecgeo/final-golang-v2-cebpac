@@ -31,6 +31,14 @@ func getHPPUserAgent() string {
 	return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
 }
 
+// resolveUA returns override if non-empty, otherwise falls back to getHPPUserAgent.
+func resolveUA(override string) string {
+	if override != "" {
+		return override
+	}
+	return getHPPUserAgent()
+}
+
 // parseHPPForm extracts hidden input fields from HTML → url-encoded postfield.
 // The HTML may use single or double quotes for attribute values.
 func parseHPPForm(htmlStr string) string {
@@ -177,13 +185,13 @@ func newNoRedirectClient() *http.Client {
 	}
 }
 
-func doJSONPost(client *http.Client, u string, extra map[string]string, body string) (int, string, http.Header, error) {
+func doJSONPost(client *http.Client, u, userAgent string, extra map[string]string, body string) (int, string, http.Header, error) {
 	req, err := http.NewRequest(http.MethodPost, u, strings.NewReader(body))
 	if err != nil {
 		return 0, "", nil, err
 	}
 	req.Header.Set("content-type", "application/json")
-	req.Header.Set("user-agent", getHPPUserAgent())
+	req.Header.Set("user-agent", resolveUA(userAgent))
 	req.Header.Set("accept", "*/*")
 	req.Header.Set("accept-language", "en-US,en;q=0.9")
 	for k, v := range extra {
@@ -198,13 +206,13 @@ func doJSONPost(client *http.Client, u string, extra map[string]string, body str
 	return resp.StatusCode, string(b), resp.Header, nil
 }
 
-func doFormPost(client *http.Client, u string, extra map[string]string, body string) (int, string, http.Header, error) {
+func doFormPost(client *http.Client, u, userAgent string, extra map[string]string, body string) (int, string, http.Header, error) {
 	req, err := http.NewRequest(http.MethodPost, u, strings.NewReader(body))
 	if err != nil {
 		return 0, "", nil, err
 	}
 	req.Header.Set("content-type", "application/x-www-form-urlencoded")
-	req.Header.Set("user-agent", getHPPUserAgent())
+	req.Header.Set("user-agent", resolveUA(userAgent))
 	req.Header.Set("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("accept-language", "en-US,en;q=0.9")
 	for k, v := range extra {
@@ -237,7 +245,7 @@ func genUUID() string {
 func processManualPayment(
 	tlsClient tls_client.HttpClient,
 	jar *bogjjar.Jar,
-	xAuthToken, bearerToken, hppContent,
+	xAuthToken, bearerToken, hppContent, hppUserAgent,
 	cardNumber, month, year string,
 ) (bool, string, *ItineraryData, error) {
 
@@ -248,8 +256,10 @@ func processManualPayment(
 		yearShort = year[2:]
 	}
 
+	ua := resolveUA(hppUserAgent)
+
 	// ── A: HPP POST ───────────────────────────────────────────────────────────
-	hppStatus, hppHTML, err := makeHPPPost(tlsClient, xAuthToken, bearerToken, hppContent)
+	hppStatus, hppHTML, err := makeHPPPost(tlsClient, xAuthToken, bearerToken, hppContent, ua)
 	if err != nil {
 		return false, "", nil, fmt.Errorf("HPP POST: %w", err)
 	}
@@ -284,6 +294,7 @@ func processManualPayment(
 	// ── C: POST to web.php ───────────────────────────────────────────────────
 	stdClient := newStdClient()
 	webCode, webBody, _, err := doFormPost(stdClient, "https://pop.cellpointdigital.net/views/web.php",
+		ua,
 		map[string]string{
 			"cache-control": "max-age=0",
 			"origin":        baseURL,
@@ -388,6 +399,7 @@ func processManualPayment(
 	var initJSON map[string]interface{}
 	for range 30 {
 		code, body, _, err2 := doJSONPost(stdClient, "https://pop.cellpointdigital.net/api/initialize",
+			ua,
 			map[string]string{
 				"signature":        initSig,
 				"token":            v["inittoken"],
@@ -461,6 +473,7 @@ func processManualPayment(
 	}
 	fxBodyBytes, _ := json.Marshal(fxMap)
 	fxCode, fxBodyStr, _, err := doJSONPost(stdClient, "https://pop.cellpointdigital.net/api/fxlookup",
+		ua,
 		map[string]string{
 			"origin":  "https://pop.cellpointdigital.net",
 			"referer": "https://pop.cellpointdigital.net/",
@@ -537,7 +550,7 @@ func processManualPayment(
 		map[string]interface{}{"name": "BrowserJavascriptEnabled", "text": true},
 		map[string]interface{}{"name": "BrowserColorDepth", "text": 24},
 		map[string]interface{}{"name": "BrowserTimeZoneOffset", "text": -480},
-		map[string]interface{}{"name": "UserAgent", "text": getHPPUserAgent()},
+		map[string]interface{}{"name": "UserAgent", "text": ua},
 		map[string]interface{}{"name": "BrowserScreenType", "text": "desktop"},
 		map[string]interface{}{"name": "BrowserOrientation", "text": "portrait"},
 	)
@@ -646,6 +659,7 @@ func processManualPayment(
 	auth1Str := string(auth1Bytes)
 	auth1Sig, auth1Key := signBody(auth1Str)
 	auth1Code, _, _, _ := doJSONPost(stdClient, "https://pop.cellpointdigital.net/api/authorize",
+		ua,
 		map[string]string{
 			"signature": auth1Sig,
 			"key":       auth1Key,
@@ -674,6 +688,7 @@ func processManualPayment(
 	auth2Str := string(auth2Bytes)
 	auth2Sig, auth2Key := signBody(auth2Str)
 	_, auth2Body, _, _ := doJSONPost(stdClient, "https://pop.cellpointdigital.net/api/authorize",
+		ua,
 		map[string]string{
 			"signature": auth2Sig,
 			"key":       auth2Key,
@@ -708,6 +723,7 @@ func processManualPayment(
 
 		// POST JWT to stepup URL
 		_, cruiseHTML, _, err := doFormPost(stdClient, stepupURL,
+			ua,
 			map[string]string{
 				"origin":                    "https://pop.cellpointdigital.net",
 				"referer":                   "https://pop.cellpointdigital.net/",
@@ -768,6 +784,7 @@ func processManualPayment(
 
 		// POST CRes to Cardinal CCA
 		_, _, _, err = doFormPost(stdClient, "https://centinelapi.cardinalcommerce.com/V1/TermURL/2.0/CCA",
+			ua,
 			map[string]string{
 				"origin":                    "https://authentication.cardinalcommerce.com",
 				"referer":                   "https://authentication.cardinalcommerce.com/",
@@ -783,6 +800,7 @@ func processManualPayment(
 
 		// POST to Cardinal TermRedirection
 		_, redirectHTML, _, err := doFormPost(stdClient, "https://centinelapi.cardinalcommerce.com/V1/Cruise/TermRedirection",
+			ua,
 			map[string]string{
 				"origin":                    "https://centinelapi.cardinalcommerce.com",
 				"referer":                   "https://centinelapi.cardinalcommerce.com/V2/Cruise/StepUp",
@@ -810,7 +828,7 @@ func processManualPayment(
 			strings.NewReader("TransactionId="+url.QueryEscape(txIDVal)+"&Response=&MD=null"),
 		)
 		cyberReq.Header.Set("content-type", "application/x-www-form-urlencoded")
-		cyberReq.Header.Set("user-agent", getHPPUserAgent())
+		cyberReq.Header.Set("user-agent", ua)
 		cyberReq.Header.Set("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
 		cyberReq.Header.Set("accept-language", "en-US,en;q=0.9")
 		cyberReq.Header.Set("origin", "https://centinelapi.cardinalcommerce.com")
@@ -859,6 +877,7 @@ func processManualPayment(
 		}
 		pcBytes, _ := json.Marshal(pcDict)
 		_, pcBody, _, _ := doJSONPost(stdClient, "https://pop.cellpointdigital.net/api/paymentcomplete",
+			ua,
 			map[string]string{
 				"referer": location,
 				"origin":  "https://pop.cellpointdigital.net",
@@ -895,6 +914,7 @@ func processManualPayment(
 		}
 		scBytes, _ := json.Marshal(scDict)
 		doJSONPost(stdClient, "https://pop.cellpointdigital.net/api/sessioncomplete",
+			ua,
 			map[string]string{"referer": location, "origin": "https://pop.cellpointdigital.net"},
 			string(scBytes),
 		)
@@ -947,6 +967,7 @@ func processManualPayment(
 			url.QueryEscape(fmt.Sprint(pcJSON["ip_address"])),
 		)
 		doFormPost(stdClient, finalURL,
+			ua,
 			map[string]string{"origin": "https://pop.cellpointdigital.net"},
 			redirectBody,
 		)
@@ -965,7 +986,7 @@ func processManualPayment(
 		// Attempt automatic itinerary retrieval after payment authorization
 		var itin *ItineraryData
 		if xAuthToken != "" && bearerToken != "" {
-			itin, _ = fetchItinerary(xAuthToken, bearerToken)
+			itin, _ = fetchItinerary(xAuthToken, bearerToken, ua)
 			if itin == nil {
 				logError("[*] Itinerary retrieval failed — continuing execution")
 				itin = &ItineraryData{RecordLocator: "N/A"}
@@ -985,7 +1006,7 @@ func processManualPayment(
 		// Attempt itinerary retrieval for NO OTP path too
 		var itinNO *ItineraryData
 		if xAuthToken != "" && bearerToken != "" {
-			itinNO, _ = fetchItinerary(xAuthToken, bearerToken)
+			itinNO, _ = fetchItinerary(xAuthToken, bearerToken, ua)
 			if itinNO == nil {
 				logError("[*] Itinerary retrieval failed — continuing execution")
 				itinNO = &ItineraryData{RecordLocator: "N/A"}

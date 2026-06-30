@@ -19,7 +19,7 @@ type ItineraryData struct {
 
 // fetchItinerary retrieves the booking itinerary from Cebu Pacific SOAR API.
 // It mirrors the JavaScript logic provided in the requirements.
-func fetchItinerary(xAuthToken, bearerToken string) (*ItineraryData, error) {
+func fetchItinerary(xAuthToken, bearerToken, userAgent string) (*ItineraryData, error) {
 	url := "https://soar.cebupacificair.com/ceb-omnix-proxy-v3/itinerary"
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
@@ -31,7 +31,7 @@ func fetchItinerary(xAuthToken, bearerToken string) (*ItineraryData, error) {
 	req.Header.Set("Referer", "https://www.cebupacificair.com")
 	req.Header.Set("Origin", "https://www.cebupacificair.com")
 	req.Header.Set("Accept", "application/json, text/plain, */*")
-	req.Header.Set("User-Agent", getHPPUserAgent())
+	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 
 	stdCl := newStdClient()
