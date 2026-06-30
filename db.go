@@ -16,6 +16,9 @@ func initDB(path string) error {
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
 	}
+	// SQLite supports only one writer at a time; a single connection avoids SQLITE_BUSY.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	if err = db.Ping(); err != nil {
 		return fmt.Errorf("ping db: %w", err)
 	}
@@ -28,6 +31,7 @@ func createSchema() error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			username TEXT UNIQUE NOT NULL,
 			password_hash TEXT NOT NULL,
+			role TEXT NOT NULL DEFAULT 'admin',
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			failed_attempts INTEGER DEFAULT 0,
 			locked_until TIMESTAMP
@@ -80,6 +84,9 @@ func createSchema() error {
 			return fmt.Errorf("schema: %w", err)
 		}
 	}
+	// Migration: add role column to existing admins tables that predate this change.
+	// SQLite returns an error if the column already exists; ignore it.
+	db.Exec(`ALTER TABLE admins ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'`)
 	return nil
 }
 
@@ -89,6 +96,7 @@ type Admin struct {
 	ID           int64
 	Username     string
 	PasswordHash string
+	Role         string
 	CreatedAt    time.Time
 	FailedAttempts int
 	LockedUntil  *time.Time
@@ -98,9 +106,9 @@ func dbGetAdmin(username string) (*Admin, error) {
 	a := &Admin{}
 	var lockedUntil sql.NullString
 	err := db.QueryRow(
-		`SELECT id, username, password_hash, created_at, failed_attempts, locked_until
+		`SELECT id, username, password_hash, role, created_at, failed_attempts, locked_until
 		 FROM admins WHERE username = ?`, username,
-	).Scan(&a.ID, &a.Username, &a.PasswordHash, &a.CreatedAt, &a.FailedAttempts, &lockedUntil)
+	).Scan(&a.ID, &a.Username, &a.PasswordHash, &a.Role, &a.CreatedAt, &a.FailedAttempts, &lockedUntil)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -114,8 +122,8 @@ func dbGetAdmin(username string) (*Admin, error) {
 	return a, nil
 }
 
-func dbCreateAdmin(username, passwordHash string) error {
-	_, err := db.Exec(`INSERT INTO admins (username, password_hash) VALUES (?, ?)`, username, passwordHash)
+func dbCreateAdmin(username, passwordHash, role string) error {
+	_, err := db.Exec(`INSERT INTO admins (username, password_hash, role) VALUES (?, ?, ?)`, username, passwordHash, role)
 	return err
 }
 

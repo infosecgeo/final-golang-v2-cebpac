@@ -15,6 +15,16 @@ func adminRouter(w http.ResponseWriter, r *http.Request) {
 
 	path := strings.TrimPrefix(r.URL.Path, "/api/admin")
 
+	// Enforce broadcast-role restrictions: only maintenance and config endpoints allowed.
+	if c := getCtxClaims(r); c != nil && c.AdminRole == roleBroadcast {
+		allowed := (path == "/config" && (r.Method == http.MethodGet || r.Method == http.MethodPut)) ||
+			(path == "/maintenance" && r.Method == http.MethodPost)
+		if !allowed {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "insufficient permissions"})
+			return
+		}
+	}
+
 	// License routes
 	switch {
 	case path == "/licenses" && r.Method == http.MethodGet:
@@ -390,6 +400,7 @@ func adminCreateAdminUser(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		Role     string `json:"role"` // "admin" (default) or "broadcast"
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "invalid body"})
@@ -401,12 +412,27 @@ func adminCreateAdminUser(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "username and password required"})
 		return
 	}
+	// Default to full admin; only "admin" and "broadcast" are valid roles.
+	if req.Role == "" {
+		req.Role = roleAdmin
+	}
+	if req.Role != roleAdmin && req.Role != roleBroadcast {
+		writeJSON(w, 400, map[string]string{"error": "role must be 'admin' or 'broadcast'"})
+		return
+	}
+	// Only a full admin can create another full admin.
+	if req.Role == roleAdmin {
+		if c := getCtxClaims(r); c == nil || c.AdminRole != roleAdmin {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "only superadmin can create admin accounts"})
+			return
+		}
+	}
 	hash, err := hashPassword(req.Password)
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": "hash error"})
 		return
 	}
-	if err := dbCreateAdmin(req.Username, hash); err != nil {
+	if err := dbCreateAdmin(req.Username, hash, req.Role); err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			writeJSON(w, 409, map[string]string{"error": "username already exists"})
 			return
@@ -414,7 +440,7 @@ func adminCreateAdminUser(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 201, map[string]string{"username": req.Username})
+	writeJSON(w, 201, map[string]string{"username": req.Username, "role": req.Role})
 }
 
 func adminChangePassword(w http.ResponseWriter, r *http.Request) {
