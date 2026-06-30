@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pusa Pacific</title>
+    <style>
+        :root {
+            --bg: #0f1117;
+            --surface: #1a1d27;
+            --surface2: #212535;
+            --border: #2e3247;
+            --border-focus: #4f6ef7;
+            --text: #e2e4f0;
+            --text-muted: #6b7394;
+            --text-dim: #4a5068;
+            --accent: #4f6ef7;
+            --accent-hover: #6080ff;
+            --live: #22c55e;
+            --live-bg: rgba(34,197,94,.10);
+            --dead: #ef4444;
+            --dead-bg: rgba(239,68,68,.10);
+            --tag-bg: #2e3247;
+            --radius: 10px;
+            --radius-sm: 6px;
+            --shadow: 0 8px 32px rgba(0,0,0,.45);
+        }
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:var(--bg); min-height:100vh; padding:32px 20px 60px; color:var(--text); }
+        .container { max-width:1060px; margin:0 auto; }
+        .header { text-align:center; margin-bottom:32px; }
+        .header-badge { display:inline-flex; align-items:center; gap:10px; background:var(--surface); border:1px solid var(--border); border-radius:50px; padding:8px 20px; font-size:13px; font-weight:600; color:var(--text-muted); letter-spacing:.6px; margin-bottom:14px; }
+        .dot { width:7px; height:7px; border-radius:50%; background:var(--accent); box-shadow:0 0 8px var(--accent); animation:pulse 2s infinite; }
+        @keyframes pulse { 0%,100%{opacity:1}50%{opacity:.35} }
+        .header-title { font-size:30px; font-weight:800; letter-spacing:-.5px; background:linear-gradient(135deg,#7b9cff 0%,#c084fc 60%,#f0abfc 100%); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+        .header-sub { margin-top:6px; font-size:13px; color:var(--text-muted); }
+        .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); padding:24px 28px; margin-bottom:16px; }
+        .card-title { font-size:10px; font-weight:700; letter-spacing:1.2px; text-transform:uppercase; color:var(--text-muted); margin-bottom:18px; display:flex; align-items:center; gap:8px; }
+        .card-title::after { content:''; flex:1; height:1px; background:var(--border); }
+        .form-group { margin-bottom:16px; }
+        .form-group:last-child { margin-bottom:0; }
+        .form-row { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+        label { display:flex; align-items:center; gap:6px; color:var(--text); font-size:13px; font-weight:600; margin-bottom:7px; }
+        label .tag { font-size:10px; font-weight:600; padding:2px 6px; border-radius:3px; background:var(--tag-bg); color:var(--text-muted); letter-spacing:.4px; }
+        label .tag.opt { color:#7b9cff; background:rgba(79,110,247,.15); }
+        textarea, select, input[type="text"] { width:100%; padding:9px 12px; background:var(--surface2); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text); font-size:13px; font-family:'Cascadia Code','Fira Code','Courier New',monospace; resize:none; overflow:hidden; transition:border-color .2s,box-shadow .2s; line-height:1.5; }
+        textarea:focus, select:focus, input[type="text"]:focus { outline:none; border-color:var(--border-focus); box-shadow:0 0 0 3px rgba(79,110,247,.15); }
+        textarea::placeholder, input[type="text"]::placeholder { color:var(--text-dim); }
+        #hpp { height:110px; resize:vertical; overflow:auto; }
+        #card.multi { height:100px; resize:vertical; overflow:auto; }
+        select { cursor:pointer; -webkit-appearance:none; appearance:none; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7394' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 12px center; padding-right:32px; }
+        select option { background:var(--surface2); color:var(--text); }
+        .mode-toggle { display:flex; background:var(--surface2); border:1px solid var(--border); border-radius:var(--radius-sm); padding:3px; width:fit-content; }
+        .mode-toggle button { all:unset; padding:7px 22px; border-radius:5px; font-size:13px; font-weight:600; cursor:pointer; color:var(--text-muted); transition:all .2s; }
+        .mode-toggle button.active { background:var(--accent); color:#fff; box-shadow:0 2px 8px rgba(79,110,247,.4); }
+        .mode-toggle button:hover:not(.active) { color:var(--text); }
+        .submit-btn { width:100%; padding:13px; background:var(--accent); color:#fff; border:none; border-radius:var(--radius-sm); font-size:14px; font-weight:700; cursor:pointer; transition:all .25s; position:relative; overflow:hidden; }
+        .submit-btn:hover { background:var(--accent-hover); transform:translateY(-1px); box-shadow:0 4px 16px rgba(79,110,247,.4); }
+        .submit-btn:active { transform:translateY(0); }
+        .submit-btn.loading { background:#2e3a72; pointer-events:none; color:transparent; }
+        .submit-btn.loading::after { content:''; position:absolute; top:50%; left:50%; width:20px; height:20px; margin:-10px 0 0 -10px; border:2px solid rgba(255,255,255,.3); border-top-color:#fff; border-radius:50%; animation:spin .7s linear infinite; }
+        @keyframes spin { to{transform:rotate(360deg)} }
+        .count-label { font-size:11px; color:var(--text-muted); font-weight:400; background:var(--tag-bg); padding:2px 7px; border-radius:3px; }
+        .summary-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); overflow:hidden; }
+        .summary-header { display:flex; align-items:center; gap:10px; padding:12px 18px; border-bottom:1px solid var(--border); background:var(--surface2); }
+        .summary-header-title { font-size:11px; font-weight:700; letter-spacing:1.2px; text-transform:uppercase; color:var(--text-muted); margin-right:auto; }
+        .badge { display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:700; padding:3px 10px; border-radius:50px; cursor:pointer; transition:all .2s; user-select:none; border:1px solid transparent; }
+        .badge.live { background:var(--live-bg); color:var(--live); border-color:rgba(34,197,94,.25); }
+        .badge.dead { background:var(--dead-bg); color:var(--dead); border-color:rgba(239,68,68,.25); }
+        .badge:hover { filter:brightness(1.2); }
+        .badge.dimmed { opacity:.3; }
+        .summary-cols { display:grid; grid-template-columns:1fr 1fr; }
+        .summary-col { position:relative; }
+        .summary-col:first-child { border-right:1px solid var(--border); }
+        .summary-col-header { display:flex; align-items:center; gap:7px; padding:10px 16px; font-size:11px; font-weight:700; letter-spacing:.8px; text-transform:uppercase; border-bottom:1px solid var(--border); cursor:pointer; user-select:none; transition:background .15s; }
+        .summary-col-header:hover { background:var(--surface2); }
+        .summary-col-header.live { color:var(--live); }
+        .summary-col-header.dead { color:var(--dead); }
+        .summary-col-header.active-filter { background:rgba(255,255,255,.04); }
+        .filter-hint { margin-left:auto; font-size:9px; font-weight:400; color:var(--text-dim); }
+        .summary-col-body { padding:10px 14px; max-height:430px; overflow-y:auto; }
+        .summary-col-body::-webkit-scrollbar { width:5px; }
+        .summary-col-body::-webkit-scrollbar-track { background:transparent; }
+        .summary-col-body::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
+        .summary-entry { font-size:12px; font-family:'Cascadia Code','Fira Code','Courier New',monospace; color:#c8cce0; padding:8px 0; border-bottom:1px solid rgba(46,50,71,.6); white-space:pre-wrap; word-break:break-word; animation:fadeIn .2s ease; line-height:1.6; }
+        .summary-entry:last-child { border-bottom:none; }
+        .summary-empty { display:block; font-size:12px; font-family:'Cascadia Code','Fira Code','Courier New',monospace; color:var(--text-dim); padding:22px 0; text-align:center; }
+        @keyframes fadeIn { from{opacity:0;transform:translateY(-3px)} to{opacity:1;transform:translateY(0)} }
+        @media(max-width:620px) { .form-row{grid-template-columns:1fr} .card{padding:18px 16px} .summary-cols{grid-template-columns:1fr} .summary-col:first-child{border-right:none;border-bottom:1px solid var(--border)} }
+    </style>
+</head>
+<body>
+<div class="container">
+
+    <div class="header">
+        <div class="header-badge"><span class="dot"></span>PUSA PACIFIC TERMINAL</div>
+        <div class="header-title">✈️ Pusa Pacific</div>
+        <div class="header-sub">Flight booking payment processor</div>
+    </div>
+
+    <div class="card">
+        <div class="card-title">Mode</div>
+        <div class="form-group">
+            <label>Operation Mode:</label>
+            <div class="mode-toggle">
+                <button type="button" id="btnManual" class="active" onclick="setMode('manual')">Manual Hit</button>
+                <button type="button" id="btnAuto" onclick="setMode('auto')">Automatic Hit</button>
+            </div>
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+            <label for="card">Card Number <span id="cardCountLabel" class="count-label" style="display:none"></span></label>
+            <textarea id="card" placeholder="1234567890123456|12|2027"></textarea>
+        </div>
+    </div>
+
+    <form id="payForm">
+        <input type="hidden" id="modeHidden" name="mode" value="manual">
+        <input type="hidden" id="cardHidden" name="card" value="">
+
+        <div id="manualFields" class="card">
+            <div class="card-title">Manual Mode</div>
+            <div class="form-group">
+                <label for="bearerToken">Authorization Bearer <span class="tag opt">OPTIONAL</span></label>
+                <textarea id="bearerToken" name="bearerToken" placeholder="eyJhbGci..."></textarea>
+            </div>
+            <div class="form-group">
+                <label for="xAuthToken">X-Auth-Token <span class="tag opt">OPTIONAL</span></label>
+                <textarea id="xAuthToken" name="xAuthToken" placeholder="eyJhbGci..."></textarea>
+            </div>
+            <div class="form-group">
+                <label for="hpp">HPP Content <span class="tag">REQUIRED</span></label>
+                <textarea id="hpp" name="hpp" placeholder="Paste HPP content here"></textarea>
+            </div>
+        </div>
+
+        <div id="autoFields" class="card" style="display:none">
+            <div class="card-title">Automatic Mode — Coming Soon</div>
+        </div>
+
+        <div class="card" style="padding:16px 28px">
+            <button type="submit" class="submit-btn" id="submitBtn">Submit</button>
+        </div>
+    </form>
+
+    <div class="summary-card">
+        <div class="summary-header">
+            <span class="summary-header-title">Results</span>
+            <span class="badge live" id="liveBadge" onclick="toggleFilter('live')">✓ LIVE <span id="liveCount">0</span></span>
+            <span class="badge dead" id="deadBadge" onclick="toggleFilter('dead')">✗ DEAD <span id="deadCount">0</span></span>
+        </div>
+        <div class="summary-cols">
+            <div class="summary-col">
+                <div class="summary-col-header live" id="liveHeader" onclick="toggleFilter('live')">✓ Live <span class="filter-hint">click to filter</span></div>
+                <div class="summary-col-body" id="liveCards"><span class="summary-empty">No results yet</span></div>
+            </div>
+            <div class="summary-col">
+                <div class="summary-col-header dead" id="deadHeader" onclick="toggleFilter('dead')">✗ Dead <span class="filter-hint">click to filter</span></div>
+                <div class="summary-col-body" id="deadCards"><span class="summary-empty">No results yet</span></div>
+            </div>
+        </div>
+    </div>
+
+</div>
+<script>
+    const cardEl = document.getElementById('card');
+    let currentMode = 'manual';
+
+    function setMode(mode) {
+        currentMode = mode;
+        document.getElementById('modeHidden').value = mode;
+        const isAuto = mode === 'auto';
+        document.getElementById('btnManual').classList.toggle('active', !isAuto);
+        document.getElementById('btnAuto').classList.toggle('active', isAuto);
+        document.getElementById('manualFields').style.display = isAuto ? 'none' : 'block';
+        document.getElementById('autoFields').style.display = isAuto ? 'block' : 'none';
+        if (isAuto) {
+            cardEl.classList.add('multi');
+            cardEl.placeholder = '4111111111111111|12|2027\n4222222222222222|11|2026\n(one card per line)';
+        } else {
+            cardEl.classList.remove('multi');
+            cardEl.placeholder = '1234567890123456|12|2027';
+            document.getElementById('cardCountLabel').style.display = 'none';
+        }
+    }
+
+    ['bearerToken','xAuthToken','hpp'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('input', function() { this.value = this.value.replace(/\s/g, ''); });
+        el.addEventListener('keydown', function(e) { if (e.key === ' ' || e.keyCode === 32) e.preventDefault(); });
+    });
+
+    var activeFilter = null;
+
+    function toggleFilter(type) {
+        var liveH = document.getElementById('liveHeader');
+        var deadH = document.getElementById('deadHeader');
+        var liveB = document.getElementById('liveBadge');
+        var deadB = document.getElementById('deadBadge');
+        if (activeFilter === type) {
+            activeFilter = null;
+            liveH.classList.remove('active-filter'); deadH.classList.remove('active-filter');
+            liveB.classList.remove('dimmed'); deadB.classList.remove('dimmed');
+            document.querySelectorAll('#liveCards .summary-entry, #deadCards .summary-entry').forEach(function(el) { el.style.display = ''; });
+        } else {
+            activeFilter = type;
+            liveH.classList.toggle('active-filter', type === 'live'); deadH.classList.toggle('active-filter', type === 'dead');
+            liveB.classList.toggle('dimmed', type !== 'live'); deadB.classList.toggle('dimmed', type !== 'dead');
+            document.querySelectorAll('#liveCards .summary-entry').forEach(function(el) { el.style.display = type === 'live' ? '' : 'none'; });
+            document.querySelectorAll('#deadCards .summary-entry').forEach(function(el) { el.style.display = type === 'dead' ? '' : 'none'; });
+        }
+    }
+
+    var liveTotal = 0, deadTotal = 0;
+
+    function appendResult(message, isLive) {
+        if (isLive) { liveTotal++; document.getElementById('liveCount').textContent = liveTotal; }
+        else { deadTotal++; document.getElementById('deadCount').textContent = deadTotal; }
+        var colId = isLive ? 'liveCards' : 'deadCards';
+        var colEl = document.getElementById(colId);
+        var empty = colEl.querySelector('.summary-empty');
+        if (empty) empty.remove();
+        var entry = document.createElement('div');
+        entry.className = 'summary-entry';
+        entry.textContent = message;
+        if (activeFilter && activeFilter !== (isLive ? 'live' : 'dead')) entry.style.display = 'none';
+        colEl.appendChild(entry);
+        colEl.scrollTop = colEl.scrollHeight;
+    }
+
+    document.getElementById('payForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        var btn = document.getElementById('submitBtn');
+        var cardVal = cardEl.value.trim();
+        document.getElementById('cardHidden').value = cardVal;
+        btn.classList.add('loading');
+        try {
+            var fd = new FormData(this);
+            fd.set('card', cardVal);
+            var res = await fetch('/pay', { method: 'POST', body: fd });
+            var result = await res.json();
+            var display = 'Card: ' + cardVal + (result.message ? '\nMessage: ' + result.message : '');
+            appendResult(display, result.success === true);
+        } catch(err) {
+            appendResult('Error: ' + err.message, false);
+        }
+        btn.classList.remove('loading');
+    });
+
+    setMode('manual');
+</script>
+</body>
+</html>
