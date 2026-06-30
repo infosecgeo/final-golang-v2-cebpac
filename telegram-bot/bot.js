@@ -1133,7 +1133,7 @@ bot.on('callback_query', async (query) => {
           // Fetch updated balance
           let updatedBalance = null;
           try {
-            const licData = await apiGet(`/api/bot/licenses/check-telegram/${encodeURIComponent(info.userId || '')}`);
+            const licData = await apiGet(`/api/bot/licenses/check-telegram/${encodeURIComponent(userId)}`);
             if (licData && licData.registered) updatedBalance = licData.credits;
           } catch (_) {}
 

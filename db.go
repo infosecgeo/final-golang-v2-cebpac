@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -124,10 +125,27 @@ func createSchema() error {
 	db.Exec(`ALTER TABLE licenses ADD COLUMN telegram_user_id TEXT DEFAULT ''`)
 	db.Exec(`ALTER TABLE licenses ADD COLUMN telegram_chat_id TEXT DEFAULT ''`)
 	// Migration: add new columns to purchase_requests for reference number, request type, and reviewer.
-	db.Exec(`ALTER TABLE purchase_requests ADD COLUMN reference_number TEXT DEFAULT ''`)
-	db.Exec(`ALTER TABLE purchase_requests ADD COLUMN request_type TEXT DEFAULT 'topup'`)
-	db.Exec(`ALTER TABLE purchase_requests ADD COLUMN reviewed_by TEXT DEFAULT ''`)
+	// SQLite does not support IF NOT EXISTS on ALTER TABLE; ignore "duplicate column" errors.
+	for _, col := range []string{
+		`ALTER TABLE purchase_requests ADD COLUMN reference_number TEXT DEFAULT ''`,
+		`ALTER TABLE purchase_requests ADD COLUMN request_type TEXT DEFAULT 'topup'`,
+		`ALTER TABLE purchase_requests ADD COLUMN reviewed_by TEXT DEFAULT ''`,
+	} {
+		if _, err := db.Exec(col); err != nil && !isColumnExistsErr(err) {
+			return fmt.Errorf("schema migration: %w", err)
+		}
+	}
 	return nil
+}
+
+// isColumnExistsErr returns true when SQLite reports that a column already exists,
+// which is the expected outcome when running ALTER TABLE migrations more than once.
+func isColumnExistsErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "duplicate column") ||
+		strings.Contains(err.Error(), "already exists")
 }
 
 // ── Admin ─────────────────────────────────────────────────────────────────────
