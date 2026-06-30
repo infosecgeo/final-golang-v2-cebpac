@@ -233,7 +233,7 @@ func processManualPayment(
 	jar *bogjjar.Jar,
 	xAuthToken, bearerToken, hppContent,
 	cardNumber, month, year string,
-) (bool, string, error) {
+) (bool, string, *ItineraryData, error) {
 
 	monthInt, _ := strconv.Atoi(month)
 	monthFmt := fmt.Sprintf("%02d", monthInt)
@@ -245,25 +245,25 @@ func processManualPayment(
 	// ── A: HPP POST ───────────────────────────────────────────────────────────
 	hppStatus, hppHTML, err := makeHPPPost(tlsClient, xAuthToken, bearerToken, hppContent)
 	if err != nil {
-		return false, "", fmt.Errorf("HPP POST: %w", err)
+		return false, "", nil, fmt.Errorf("HPP POST: %w", err)
 	}
 	switch hppStatus {
 	case 403:
-		return false, "HPP 403 — Akamai blocked", nil
+		return false, "HPP 403 — Akamai blocked", nil, nil
 	case 404:
-		return false, "HPP 404 — Booking session expired or tokens invalid", nil
+		return false, "HPP 404 — Booking session expired or tokens invalid", nil, nil
 	case 400:
 		p := hppHTML
 		if len(p) > 500 {
 			p = p[:500]
 		}
-		return false, "HPP 400 — " + p, nil
+		return false, "HPP 400 — " + p, nil, nil
 	}
 	if hppStatus != 200 {
-		return false, fmt.Sprintf("HPP error (status %d)", hppStatus), nil
+		return false, fmt.Sprintf("HPP error (status %d)", hppStatus), nil, nil
 	}
 	if strings.Contains(hppHTML, "Booking balance due must be greater than 0") {
-		return false, "Booking balance due must be greater than 0.", nil
+		return false, "Booking balance due must be greater than 0.", nil, nil
 	}
 
 	// ── B: Parse HPP HTML → urlencoded postfield ──────────────────────────────
@@ -273,7 +273,7 @@ func processManualPayment(
 		if len(p) > 500 {
 			p = p[:500]
 		}
-		return false, "Failed to parse HPP form. Preview: " + p, nil
+		return false, "Failed to parse HPP form. Preview: " + p, nil, nil
 	}
 	// ── C: POST to web.php ───────────────────────────────────────────────────
 	stdClient := newStdClient()
@@ -287,10 +287,10 @@ func processManualPayment(
 		postfield,
 	)
 	if err != nil {
-		return false, "", fmt.Errorf("web.php: %w", err)
+		return false, "", nil, fmt.Errorf("web.php: %w", err)
 	}
 	if webCode != 200 {
-		return false, fmt.Sprintf("web.php failed (%d)", webCode), nil
+		return false, fmt.Sprintf("web.php failed (%d)", webCode), nil, nil
 	}
 
 	// ── D: Extract sessionStorage from web.php ────────────────────────────────
@@ -300,7 +300,7 @@ func processManualPayment(
 		if len(p) > 500 {
 			p = p[:500]
 		}
-		return false, "Failed to extract session data from web.php. Preview: " + p, nil
+		return false, "Failed to extract session data from web.php. Preview: " + p, nil, nil
 	}
 	// helpers
 	strOrNull := func(key string) interface{} {
@@ -395,11 +395,11 @@ func processManualPayment(
 			initBodyStr,
 		)
 		if err2 != nil {
-			return false, "", fmt.Errorf("initialize: %w", err2)
+			return false, "", nil, fmt.Errorf("initialize: %w", err2)
 		}
 		if code == 200 && len(body) > 0 {
 			if e := json.Unmarshal([]byte(body), &initJSON); e != nil {
-				return false, "", fmt.Errorf("initialize JSON: %w", e)
+				return false, "", nil, fmt.Errorf("initialize JSON: %w", e)
 			}
 			break
 		} else if code == 200 {
@@ -408,7 +408,7 @@ func processManualPayment(
 		break
 	}
 	if initJSON == nil {
-		return false, "Initialize was not successful.", nil
+		return false, "Initialize was not successful.", nil, nil
 	}
 
 	transactionID := ""
@@ -463,7 +463,7 @@ func processManualPayment(
 		string(fxBodyBytes),
 	)
 	if err != nil || fxCode != 200 {
-		return false, "fxlookup was not successful.", nil
+		return false, "fxlookup was not successful.", nil, nil
 	}
 
 	var fxJSON map[string]interface{}
@@ -650,7 +650,7 @@ func processManualPayment(
 		auth1Str,
 	)
 	if auth1Code != 200 {
-		return false, "Authorize request failed. [Regenerate Postfield.]", nil
+		return false, "Authorize request failed. [Regenerate Postfield.]", nil, nil
 	}
 
 	// Second authorize (actual auth with device data)
@@ -679,7 +679,7 @@ func processManualPayment(
 	)
 	var authJSON map[string]interface{}
 	if e := json.Unmarshal([]byte(auth2Body), &authJSON); e != nil {
-		return false, "", fmt.Errorf("authorize2 JSON: %w", e)
+		return false, "", nil, fmt.Errorf("authorize2 JSON: %w", e)
 	}
 	authorizeCode := fmt.Sprint(authJSON["Code"])
 	log.Printf("authorizeCode=%s", authorizeCode)
@@ -695,7 +695,7 @@ func processManualPayment(
 		actionM := actionRe.FindStringSubmatch(decoded)
 		jwtM := jwtRe.FindStringSubmatch(decoded)
 		if actionM == nil || jwtM == nil {
-			return false, "Failed to parse 3DS data", nil
+			return false, "Failed to parse 3DS data", nil, nil
 		}
 		stepupURL := actionM[1]
 		stepupJWT := jwtM[1]
@@ -712,7 +712,7 @@ func processManualPayment(
 			"JWT="+url.QueryEscape(stepupJWT),
 		)
 		if err != nil {
-			return false, "", fmt.Errorf("3DS stepup: %w", err)
+			return false, "", nil, fmt.Errorf("3DS stepup: %w", err)
 		}
 
 		payloadRe := regexp.MustCompile(`name="payload" value="([^"]+)"`)
@@ -724,7 +724,7 @@ func processManualPayment(
 		McsIdM := McsIdRe.FindStringSubmatch(cruiseHTML)
 
 		if payloadM == nil || mcsIdM == nil {
-			return false, "Failed to parse 3DS cruise data", nil
+			return false, "Failed to parse 3DS cruise data", nil, nil
 		}
 		jwtPayload := payloadM[1]
 		mcsID := mcsIdM[1]
@@ -743,12 +743,12 @@ func processManualPayment(
 			// try URL encoding
 			decodedPayloadBytes, err = base64.URLEncoding.DecodeString(padded)
 			if err != nil {
-				return false, "Failed to decode 3DS JWT payload", nil
+				return false, "Failed to decode 3DS JWT payload", nil, nil
 			}
 		}
 		var jwtPayloadJSON map[string]interface{}
 		if e := json.Unmarshal(decodedPayloadBytes, &jwtPayloadJSON); e != nil {
-			return false, "", fmt.Errorf("3DS JWT decode: %w", e)
+			return false, "", nil, fmt.Errorf("3DS JWT decode: %w", e)
 		}
 		cresJSON, _ := json.Marshal(map[string]interface{}{
 			"threeDSServerTransID":     jwtPayloadJSON["threeDSServerTransID"],
@@ -772,7 +772,7 @@ func processManualPayment(
 			"cres="+url.QueryEscape(cresEncoded)+"&threeDSSessionData="+url.QueryEscape(mcsID),
 		)
 		if err != nil {
-			return false, "", fmt.Errorf("cardinal CCA: %w", err)
+			return false, "", nil, fmt.Errorf("cardinal CCA: %w", err)
 		}
 
 		// POST to Cardinal TermRedirection
@@ -787,13 +787,13 @@ func processManualPayment(
 			"McsId="+url.QueryEscape(McsID)+"&CardinalJWT=&Error=",
 		)
 		if err != nil {
-			return false, "", fmt.Errorf("cardinal TermRedirection: %w", err)
+			return false, "", nil, fmt.Errorf("cardinal TermRedirection: %w", err)
 		}
 
 		txIDRe := regexp.MustCompile(`name="TransactionId" value="([^"]+)"`)
 		txIDM := txIDRe.FindStringSubmatch(redirectHTML)
 		if txIDM == nil {
-			return false, "Merchant's response was not captured. [Retry running the script again.]", nil
+			return false, "Merchant's response was not captured. [Retry running the script again.]", nil, nil
 		}
 		txIDVal := txIDM[1]
 
@@ -814,24 +814,25 @@ func processManualPayment(
 		cyberReq.Header.Set("priority", "u=0, i")
 		cyberResp, err := noRedir.Do(cyberReq)
 		if err != nil {
-			return false, "", fmt.Errorf("cybersource redirect: %w", err)
+			return false, "", nil, fmt.Errorf("cybersource redirect: %w", err)
 		}
 		io.ReadAll(cyberResp.Body)
 		cyberResp.Body.Close()
 		location := cyberResp.Header.Get("Location")
 		if location == "" {
-			return false, "Merchant's response was not captured. [Retry running the script again.]", nil
+			return false, "Merchant's response was not captured. [Retry running the script again.]", nil, nil
 		}
 
 		parsedLoc, _ := url.Parse(location)
 		qp := parsedLoc.Query()
 		locCode := qp.Get("code")
 		locSubCode := qp.Get("sub_code")
-		if locCode != "2000" || locSubCode != "2000101" {
-			return false, fmt.Sprintf("Response: %s - %s", locCode, subcodeMessage(locSubCode)), nil
+		// SUCCESS: locCode != "2000" AND locSubCode != "2000101" (per payment requirements)
+		if locCode == "2000" && locSubCode == "2000101" {
+			return false, fmt.Sprintf("Response: %s - %s [Declined]", locCode, subcodeMessage(locSubCode)), nil, nil
 		}
 
-		// code=2000 & sub_code=2000101 → payment complete
+		// Payment authorized - proceed to paymentcomplete
 		var securedData map[string]interface{}
 		if sd, ok := initJSON["secured_data"].(map[string]interface{}); ok {
 			securedData = sd
@@ -860,11 +861,13 @@ func processManualPayment(
 		)
 		var pcJSON map[string]interface{}
 		if e := json.Unmarshal([]byte(pcBody), &pcJSON); e != nil {
-			return false, "", fmt.Errorf("paymentcomplete JSON: %w", e)
+			return false, "", nil, fmt.Errorf("paymentcomplete JSON: %w", e)
 		}
 
-		if fraudDesc := fmt.Sprint(pcJSON["fraud_status_desc"]); fraudDesc == "Rejected" {
-			return true, "Response: Payment Authorized but Fraud Status was Rejected", nil
+		fraudDesc := fmt.Sprint(pcJSON["fraud_status_desc"])
+		if fraudDesc == "Rejected" {
+			// Fraud rejected - payment not successful
+			return false, "Response: Fraud Status Rejected", nil, nil
 		}
 
 		// sessioncomplete
@@ -947,14 +950,25 @@ func processManualPayment(
 		if n, e := strconv.ParseFloat(amountRaw, 64); e == nil {
 			amountDisplay = n / 100
 		}
-		fraudDesc := fmt.Sprint(pcJSON["fraud_status_desc"])
+		fraudDescFinal := fmt.Sprint(pcJSON["fraud_status_desc"])
 		emailVal := fmt.Sprint(pcJSON["email"])
 		if emailVal == "<nil>" {
 			emailVal = v["email"]
 		}
 
-		return true, fmt.Sprintf("Response: Payment Authorised\nFraud Status: %s\nAmount: %.2f\nEmail: %s",
-			fraudDesc, amountDisplay, emailVal), nil
+		// Attempt automatic itinerary retrieval after payment authorization
+		var itin *ItineraryData
+		if xAuthToken != "" && bearerToken != "" {
+			itin, _ = fetchItinerary(xAuthToken, bearerToken)
+			if itin == nil {
+				logError("[*] Itinerary retrieval failed — continuing execution")
+				itin = &ItineraryData{RecordLocator: "N/A"}
+			}
+		}
+
+		msg := fmt.Sprintf("Response: Payment Authorised\nFraud Status: %s\nAmount: %.2f\nEmail: %s\nAuth Time: %s",
+			fraudDescFinal, amountDisplay, emailVal, time.Now().UTC().Format(time.RFC3339))
+		return true, msg, itin, nil
 
 	case "2000":
 		amountRaw := v["amount"]
@@ -962,12 +976,22 @@ func processManualPayment(
 		if n, e := strconv.ParseFloat(amountRaw, 64); e == nil {
 			amountDisplay = n / 100
 		}
-		return true, fmt.Sprintf("Response: Payment Authorised [NO OTP]\nAmount: %.2f\nEmail: %s",
-			amountDisplay, v["email"]), nil
+		// Attempt itinerary retrieval for NO OTP path too
+		var itinNO *ItineraryData
+		if xAuthToken != "" && bearerToken != "" {
+			itinNO, _ = fetchItinerary(xAuthToken, bearerToken)
+			if itinNO == nil {
+				logError("[*] Itinerary retrieval failed — continuing execution")
+				itinNO = &ItineraryData{RecordLocator: "N/A"}
+			}
+		}
+		msgNO := fmt.Sprintf("Response: Payment Authorised [NO OTP]\nAmount: %.2f\nEmail: %s\nAuth Time: %s",
+			amountDisplay, v["email"], time.Now().UTC().Format(time.RFC3339))
+		return true, msgNO, itinNO, nil
 
 	case "400":
 		msg := fmt.Sprint(authJSON["message"])
-		return false, fmt.Sprintf("Response: 400 [%s]", msg), nil
+		return false, fmt.Sprintf("Response: 400 [%s]", msg), nil, nil
 
 	default:
 		sub := ""
@@ -975,6 +999,6 @@ func processManualPayment(
 			sub = " - " + subcodeMessage(sc)
 		}
 		msg := fmt.Sprint(authJSON["message"])
-		return false, fmt.Sprintf("Response: %s%s [%s]", authorizeCode, sub, msg), nil
+		return false, fmt.Sprintf("Response: %s%s [%s]", authorizeCode, sub, msg), nil, nil
 	}
 }

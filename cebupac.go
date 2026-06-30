@@ -24,11 +24,24 @@ const (
 	userAgent  = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
 	secChUa    = `"Google Chrome";v="137", "Chromium";v="137", "Not/A)Brand";v="24"`
 	acceptLang = "en-US,en;q=0.9"
-	apiKey     = "b260f3c7-23ea-422c-bcd4-a0b57a11f8a9"
+	soarURL = "https://soar.cebupacificair.com"
 
-	soarURL  = "https://soar.cebupacificair.com"
-	proxyURL = "http://lbbhyx386857_custom_zone_PH:pwd927726@us.proxy001.com:7878"
+	// Fallback Hyper SDK API key (overridden by config)
+	defaultAPIKey = "b260f3c7-23ea-422c-bcd4-a0b57a11f8a9"
 )
+
+// getAPIKey returns the Hyper SDK API key from config (with fallback).
+func getAPIKey() string {
+	if k := getConfig("api_key"); k != "" {
+		return k
+	}
+	return defaultAPIKey
+}
+
+// getProxyURL returns the proxy URL from config.
+func getProxyURL() string {
+	return getConfig("proxy_url")
+}
 
 func getCookie(jar *cookiejar.Jar, name string) string {
 	u, _ := url.Parse(baseURL)
@@ -50,8 +63,8 @@ func runAkamaiChallenge() (tls_client.HttpClient, *cookiejar.Jar, error) {
 		tls_client.WithCookieJar(jar),
 		tls_client.WithRandomTLSExtensionOrder(),
 	}
-	if proxyURL != "" {
-		options = append(options, tls_client.WithProxyUrl(proxyURL))
+	if p := getProxyURL(); p != "" {
+		options = append(options, tls_client.WithProxyUrl(p))
 	}
 
 	client, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(), options...)
@@ -187,7 +200,7 @@ func runAkamaiChallenge() (tls_client.HttpClient, *cookiejar.Jar, error) {
 	outboundIP := strings.TrimSpace(string(ipBytes))
 
 	// ── Step 4: Generate and POST SBSD sensor ──────────────────────────────
-	hyperSession := hyper.NewSession(apiKey)
+	hyperSession := hyper.NewSession(getAPIKey())
 
 	sbsdPayload, err := hyperSession.GenerateSbsdData(context.Background(), &hyper.SbsdInput{
 		Index:          0,
