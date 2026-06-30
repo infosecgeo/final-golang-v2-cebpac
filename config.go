@@ -29,6 +29,7 @@ var configDefaults = map[string]string{
 	"telegram_payment_group":  "",
 	"hpp_user_agent":          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
 	"bot_api_key":             "",
+	"credit_price_php":        "250.00",
 }
 
 var (
@@ -103,6 +104,15 @@ func getConfigInt(key string, fallback int) int {
 	v := getConfig(key)
 	if n, err := strconv.Atoi(v); err == nil {
 		return n
+	}
+	return fallback
+}
+
+// getConfigFloat returns a float64 config value.
+func getConfigFloat(key string, fallback float64) float64 {
+	v := getConfig(key)
+	if f, err := strconv.ParseFloat(v, 64); err == nil {
+		return f
 	}
 	return fallback
 }

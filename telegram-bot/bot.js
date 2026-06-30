@@ -64,10 +64,16 @@ console.log('[INFO] AnasFlightsV2 Telegram bot started (polling).');
 
 // ── In-memory conversation state ───────────────────────────────────────────────
 
-// userId (string) → { packageId, packageName, credits, amountPHP }
+// userId → { pricePerCredit }  (user accepted T&C, waiting to enter credit count)
+const awaitingCreditCount = new Map();
+
+// userId → { credits, amountPHP }  (waiting for license key after credit count entered)
 const awaitingLicenseKey = new Map();
 
-// messageId in payment group → { requestId, userId, chatId, packageName, credits, amountPHP, licenseKey, username }
+// userId → { credits, amountPHP, licenseKey }  (waiting for proof-of-payment photo)
+const awaitingReceipt = new Map();
+
+// requestId (number) → { chatId, userId, credits, amountPHP, licenseKey, username }
 const pendingApprovals = new Map();
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -135,6 +141,22 @@ async function registerSubscriber(msg) {
   } catch (e) {
     console.warn('[WARN] registerSubscriber:', e.message);
   }
+}
+
+function buildTCMessage() {
+  return [
+    `📋 *Terms \\& Conditions*`,
+    ``,
+    `Before proceeding, please read and accept the following terms:`,
+    ``,
+    `• Credits are *NON\\-REFUNDABLE* once payment is confirmed`,
+    `• Credits are consumed per successful booking transaction`,
+    `• Keep your license key private and secure`,
+    `• Service availability is subject to maintenance windows`,
+    `• Payment must match the exact amount requested`,
+    ``,
+    `Do you agree to these Terms \\& Conditions?`,
+  ].join('\n');
 }
 
 // ── Webhook receiver (for push events from Go backend) ─────────────────────────
@@ -317,15 +339,17 @@ bot.onText(/\/start/, async (msg) => {
     ``,
     `We provide automated flight booking assistance powered by credits\\.`,
     ``,
-    `📋 *Terms \\& Conditions*`,
-    `• Credits are *NON\\-REFUNDABLE* once payment is confirmed`,
-    `• Credits are consumed per successful booking transaction`,
-    `• Keep your license key private and secure`,
-    `• Service availability is subject to maintenance windows`,
-    ``,
-    `💡 Use /help to see how to subscribe or buy credits\\.`,
+    buildTCMessage(),
   ].join('\n');
-  await bot.sendMessage(msg.chat.id, text, { parse_mode: 'MarkdownV2' });
+  await bot.sendMessage(msg.chat.id, text, {
+    parse_mode: 'MarkdownV2',
+    reply_markup: {
+      inline_keyboard: [[
+        { text: '✅ I Accept', callback_data: 'tc_accept_start' },
+        { text: '❌ I Decline', callback_data: 'tc_deny' },
+      ]],
+    },
+  });
 });
 
 // ── /register ──────────────────────────────────────────────────────────────────
@@ -367,6 +391,8 @@ bot.onText(/\/register(?:\s+(.+))?/, async (msg, match) => {
         `🔑 License \`${escMd(licenseKey)}\` is now linked to your Telegram account\\.`,
         ``,
         `You will receive booking receipts and notifications here automatically\\.`,
+        ``,
+        `Use /help to buy credits and start booking\\.`,
       ].join('\n'),
       { parse_mode: 'MarkdownV2' }
     );
@@ -394,8 +420,8 @@ bot.onText(/\/help/, async (msg) => {
     `• Service availability may be interrupted for maintenance`,
     ``,
     `💳 *Buy Credits*`,
-    `Choose a package below to subscribe or top up your account\\.`,
-    `After selecting a package you will receive a QR code for payment\\.`,
+    `Choose how many credits to purchase\\. A QR code for payment will be shown\\.`,
+    `After paying, send your proof of payment to complete the request\\.`,
     ``,
     `/start \\— Welcome \\& registration info`,
     `/register \\<LIC\\-KEY\\> \\— Link your license to receive receipts here`,
@@ -585,17 +611,14 @@ bot.onText(/\/broadcast_online/, async (msg) => {
 bot.onText(/\/broadcast_prices/, async (msg) => {
   if (!isAdmin(msg.from.id)) return;
   try {
-    const packages = await apiGet('/api/bot/packages');
-    if (!Array.isArray(packages) || packages.length === 0) {
-      await bot.sendMessage(msg.chat.id, '⚠️ No active packages found\\.', { parse_mode: 'MarkdownV2' });
-      return;
-    }
+    const priceData = await apiGet('/api/bot/credit-price');
+    const price = priceData.pricePerCredit || 250;
     const lines = [
-      `💰 *AnasFlightsV2 — Credit Packages*`,
+      `💰 *AnasFlightsV2 — Credit Pricing*`,
       ``,
-      ...packages.map(p => `🎟 *${escMd(p.name)}* — ${escMd(String(p.credits))} credits for *${escMd(fmtPHP(p.pricePHP))}*`),
+      `🎟 *Price per credit: ${escMd(fmtPHP(price))}*`,
       ``,
-      `Tap /help to purchase\\.`,
+      `You choose how many credits to purchase\\. Tap /help to buy\\.`,
     ];
     await broadcastToSubscribers(lines.join('\n'));
     await bot.sendMessage(msg.chat.id, '✅ Prices broadcast to all subscribers\\.', { parse_mode: 'MarkdownV2' });
@@ -611,28 +634,83 @@ bot.on('callback_query', async (query) => {
   const userId  = String(query.from.id);
   const data    = query.data || '';
 
-  // ── Buy Credits — show package list ────────────────────────────────────────
+  // ── Buy Credits — show T&C first ──────────────────────────────────────────
   if (data === 'buy_credits') {
     await bot.answerCallbackQuery(query.id);
+    await bot.sendMessage(chatId, buildTCMessage(), {
+      parse_mode: 'MarkdownV2',
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '✅ I Accept', callback_data: 'tc_accept' },
+          { text: '❌ I Decline', callback_data: 'tc_deny' },
+        ]],
+      },
+    });
+    return;
+  }
+
+  // ── T&C accepted from /start welcome ──────────────────────────────────────
+  if (data === 'tc_accept_start') {
+    await bot.answerCallbackQuery(query.id);
+    await bot.sendMessage(chatId,
+      [
+        `✅ *Terms \\& Conditions Accepted\\!*`,
+        ``,
+        `To get started:`,
+        ``,
+        `1️⃣ Register your license key:`,
+        `   /register LIC\\-XXXXXXXX`,
+        ``,
+        `2️⃣ Then use /help to buy credits\\.`,
+        ``,
+        `_If you don't have a license key yet, please contact the admin\\._`,
+      ].join('\n'),
+      { parse_mode: 'MarkdownV2' }
+    );
+    return;
+  }
+
+  // ── T&C accepted — proceed to credit count ────────────────────────────────
+  if (data === 'tc_accept') {
+    await bot.answerCallbackQuery(query.id);
+    let pricePerCredit = 250;
     try {
-      const packages = await apiGet('/api/bot/packages');
-      if (!Array.isArray(packages) || packages.length === 0) {
-        await bot.sendMessage(chatId,
-          '⚠️ No credit packages are available at the moment\\. Please check back later\\.', { parse_mode: 'MarkdownV2' });
-        return;
-      }
-      const keyboard = packages.map(p => [{
-        text: `${p.name} — ${p.credits} credits @ ${fmtPHP(p.pricePHP)}`,
-        callback_data: `pkg:${p.id}:${p.name}:${p.credits}:${p.pricePHP}`,
-      }]);
-      keyboard.push([{ text: '🔙 Back', callback_data: 'back_help' }]);
-      await bot.sendMessage(chatId,
-        `💳 *Choose a Credit Package*\n\n_Select the package you want to purchase:_`,
-        { parse_mode: 'MarkdownV2', reply_markup: { inline_keyboard: keyboard } }
-      );
+      const priceData = await apiGet('/api/bot/credit-price');
+      pricePerCredit = priceData.pricePerCredit || 250;
     } catch (e) {
-      await bot.sendMessage(chatId, `❌ Failed to load packages: ${escMd(e.message)}`, { parse_mode: 'MarkdownV2' });
+      console.warn('[WARN] Failed to fetch credit price:', e.message);
     }
+    // Store state
+    awaitingCreditCount.set(userId, { pricePerCredit });
+    await bot.sendMessage(chatId,
+      [
+        `✅ *Terms \\& Conditions Accepted\\!*`,
+        ``,
+        `💰 *Price per credit: ${escMd(fmtPHP(pricePerCredit))}*`,
+        ``,
+        `How many credits would you like to purchase?`,
+        `_Minimum: 1 credit_`,
+        ``,
+        `Please reply with a number \\(e\\.g\\. 5\\)\\.`,
+      ].join('\n'),
+      { parse_mode: 'MarkdownV2', reply_markup: { force_reply: true, input_field_placeholder: 'e.g. 5' } }
+    );
+    return;
+  }
+
+  // ── T&C declined ──────────────────────────────────────────────────────────
+  if (data === 'tc_deny') {
+    await bot.answerCallbackQuery(query.id);
+    await bot.sendMessage(chatId,
+      [
+        `❌ *Terms \\& Conditions Declined\\.*`,
+        ``,
+        `You cannot proceed without accepting the Terms \\& Conditions\\.`,
+        ``,
+        `Use /help if you change your mind\\.`,
+      ].join('\n'),
+      { parse_mode: 'MarkdownV2' }
+    );
     return;
   }
 
@@ -642,58 +720,6 @@ bot.on('callback_query', async (query) => {
     await bot.sendMessage(chatId,
       `✈️ *AnasFlightsV2 — Help*\n\nUse /help to see available commands and buy credits\\.`,
       { parse_mode: 'MarkdownV2' }
-    );
-    return;
-  }
-
-  // ── Package selected ───────────────────────────────────────────────────────
-  if (data.startsWith('pkg:')) {
-    await bot.answerCallbackQuery(query.id);
-    const parts = data.split(':');
-    // pkg:<id>:<name>:<credits>:<price>
-    const pkgId       = parts[1];
-    const pkgName     = parts[2];
-    const pkgCredits  = parts[3];
-    const pkgPrice    = parseFloat(parts[4]);
-
-    // Store pending state
-    awaitingLicenseKey.set(userId, {
-      packageId:   pkgId,
-      packageName: pkgName,
-      credits:     parseInt(pkgCredits, 10),
-      amountPHP:   pkgPrice,
-    });
-
-    // Send QR code with amount if available
-    const caption = [
-      `✅ *You selected: ${escMd(pkgName)}*`,
-      `💰 *Amount to pay: ${escMd(fmtPHP(pkgPrice))}*`,
-      `🎟 Credits: *${escMd(pkgCredits)}*`,
-      ``,
-      `📱 *Scan the QR code below* to make your payment\\.`,
-      ``,
-      `⚠️ *IMPORTANT:* Credits are *NON\\-REFUNDABLE* once payment is confirmed\\.`,
-      ``,
-      `After paying, please reply with your *license key* so we can process your request\\.`,
-    ].join('\n');
-
-    if (QR_CODE_PATH && fs.existsSync(QR_CODE_PATH)) {
-      try {
-        await bot.sendPhoto(chatId, fs.createReadStream(QR_CODE_PATH), {
-          caption,
-          parse_mode: 'MarkdownV2',
-        });
-      } catch (e) {
-        console.error('[ERROR] sendPhoto failed:', e.message);
-        await bot.sendMessage(chatId, caption, { parse_mode: 'MarkdownV2' });
-      }
-    } else {
-      await bot.sendMessage(chatId, caption, { parse_mode: 'MarkdownV2' });
-    }
-
-    await bot.sendMessage(chatId,
-      `🔑 Please reply with your *license key* \\(e\\.g\\. LIC\\-XXXXXXXX\\) to submit your purchase request\\.`,
-      { parse_mode: 'MarkdownV2', reply_markup: { force_reply: true, input_field_placeholder: 'LIC-XXXXXXXX' } }
     );
     return;
   }
@@ -727,10 +753,6 @@ bot.on('callback_query', async (query) => {
         chat_id: query.message.chat.id,
         message_id: query.message.message_id,
       });
-      await bot.editMessageText(
-        query.message.text + `\n\n${status === 'approved' ? '✅ APPROVED' : '❌ DENIED'} by @${query.from.username || query.from.id}`,
-        { chat_id: query.message.chat.id, message_id: query.message.message_id }
-      );
     } catch (_) {}
 
     // Notify user — use in-memory state or fall back to DB response data
@@ -748,12 +770,11 @@ bot.on('callback_query', async (query) => {
           [
             `🎉 *Your purchase request has been APPROVED\\!*`,
             ``,
-            `📦 Package: *${escMd(info.packageName)}*`,
             `🎟 Credits: *${escMd(String(info.credits))}*`,
             `💰 Amount: *${escMd(fmtPHP(info.amountPHP))}*`,
             `🔑 License: \`${escMd(info.licenseKey || 'N/A')}\``,
             ``,
-            `Credits have been added to your license\\. Thank you for your purchase\\! ✈️`,
+            `✅ Credits have been added to your license\\. Thank you for your purchase\\! ✈️`,
           ].join('\n'),
           { parse_mode: 'MarkdownV2' }
         );
@@ -762,10 +783,10 @@ bot.on('callback_query', async (query) => {
           [
             `❌ *Your purchase request has been DENIED\\.*`,
             ``,
-            `📦 Package: *${escMd(info.packageName)}*`,
+            `🎟 Credits: *${escMd(String(info.credits))}*`,
             `💰 Amount: *${escMd(fmtPHP(info.amountPHP))}*`,
             ``,
-            `If you believe this is a mistake, please contact support\\.`,
+            `If you believe this is a mistake or have questions, please contact support\\.`,
           ].join('\n'),
           { parse_mode: 'MarkdownV2' }
         );
@@ -776,98 +797,224 @@ bot.on('callback_query', async (query) => {
   }
 });
 
-// ── Handle text messages (for license key input) ───────────────────────────────
+// ── Handle text and photo messages ────────────────────────────────────────────
 
 bot.on('message', async (msg) => {
-  if (!msg.text || msg.text.startsWith('/')) return;
   if (!msg.from) return;
 
   const userId  = String(msg.from.id);
   const chatId  = msg.chat.id;
-  const pending = awaitingLicenseKey.get(userId);
 
-  if (!pending) return;
+  // ── Phase 1: awaiting credit count ────────────────────────────────────────
+  if (awaitingCreditCount.has(userId)) {
+    // Only handle non-command text in this phase
+    if (!msg.text || msg.text.startsWith('/')) return;
 
-  const licenseKey = msg.text.trim();
-  awaitingLicenseKey.delete(userId);
+    const pending = awaitingCreditCount.get(userId);
+    const count = parseInt(msg.text.trim(), 10);
 
-  // Create purchase request in backend
-  let requestId;
-  try {
-    const result = await apiPost('/api/bot/purchase-requests', {
-      telegramUserId: userId,
-      username: msg.from.username || msg.from.first_name || '',
-      chatId: String(chatId),
-      packageId: parseInt(pending.packageId, 10),
-      packageName: pending.packageName,
-      credits: pending.credits,
-      amountPHP: pending.amountPHP,
-      licenseKey,
-    });
-    requestId = result.id;
-  } catch (e) {
+    if (isNaN(count) || count < 1) {
+      await bot.sendMessage(chatId,
+        `⚠️ Please enter a valid number of credits \\(minimum 1\\)\\.`,
+        { parse_mode: 'MarkdownV2' }
+      );
+      return;
+    }
+
+    awaitingCreditCount.delete(userId);
+
+    const amountPHP = count * pending.pricePerCredit;
+
+    // Move to license key phase
+    awaitingLicenseKey.set(userId, { credits: count, amountPHP });
+
+    // Show QR code and payment details
+    const caption = [
+      `🎟 *Credits requested: ${escMd(String(count))}*`,
+      `💰 *Total to pay: ${escMd(fmtPHP(amountPHP))}*`,
+      ``,
+      `📱 *Scan the QR code below* to make your GCash/bank payment\\.`,
+      ``,
+      `⚠️ *IMPORTANT:*`,
+      `• Pay the *exact amount* shown above`,
+      `• Credits are *NON\\-REFUNDABLE* once confirmed`,
+      ``,
+      `After paying, reply with your *license key* \\(e\\.g\\. LIC\\-XXXXXXXX\\)\\.`,
+    ].join('\n');
+
+    if (QR_CODE_PATH && fs.existsSync(QR_CODE_PATH)) {
+      try {
+        await bot.sendPhoto(chatId, fs.createReadStream(QR_CODE_PATH), {
+          caption,
+          parse_mode: 'MarkdownV2',
+        });
+      } catch (e) {
+        console.error('[ERROR] sendPhoto failed:', e.message);
+        await bot.sendMessage(chatId, caption, { parse_mode: 'MarkdownV2' });
+      }
+    } else {
+      await bot.sendMessage(chatId, caption, { parse_mode: 'MarkdownV2' });
+    }
+
     await bot.sendMessage(chatId,
-      `❌ Failed to submit your request: ${escMd(e.message)}\\. Please try again\\.`,
-      { parse_mode: 'MarkdownV2' }
+      `🔑 Please reply with your *license key* \\(e\\.g\\. LIC\\-XXXXXXXX\\)\\.`,
+      { parse_mode: 'MarkdownV2', reply_markup: { force_reply: true, input_field_placeholder: 'LIC-XXXXXXXX' } }
     );
     return;
   }
 
-  // Confirm to user
-  await bot.sendMessage(chatId,
-    [
-      `✅ *Purchase Request Submitted\\!*`,
-      ``,
-      `📦 Package: *${escMd(pending.packageName)}*`,
-      `🎟 Credits: *${escMd(String(pending.credits))}*`,
-      `💰 Amount: *${escMd(fmtPHP(pending.amountPHP))}*`,
-      `🔑 License: \`${escMd(licenseKey)}\``,
-      `📋 Request ID: \`${escMd(String(requestId))}\``,
-      ``,
-      `Your request is now pending review\\. You will be notified once it is approved or denied\\.`,
-      ``,
-      `⚠️ Reminder: Credits are *NON\\-REFUNDABLE* once confirmed\\.`,
-    ].join('\n'),
-    { parse_mode: 'MarkdownV2' }
-  );
+  // ── Phase 2: awaiting license key ─────────────────────────────────────────
+  if (awaitingLicenseKey.has(userId)) {
+    if (!msg.text || msg.text.startsWith('/')) return;
 
-  // Forward to payment group
-  if (PAYMENT_GROUP_ID) {
-    const groupMsg = [
-      `💳 *New Purchase Request \\#${escMd(String(requestId))}*`,
-      ``,
-      `👤 User: @${escMd(msg.from.username || String(userId))} \\(ID: \`${escMd(userId)}\`\\)`,
-      `📦 Package: *${escMd(pending.packageName)}*`,
-      `🎟 Credits: *${escMd(String(pending.credits))}*`,
-      `💰 Amount: *${escMd(fmtPHP(pending.amountPHP))}*`,
-      `🔑 License: \`${escMd(licenseKey)}\``,
-      `🕐 Time: ${escMd(fmtDate(new Date().toISOString()))}`,
-    ].join('\n');
+    const pending = awaitingLicenseKey.get(userId);
+    const licenseKey = msg.text.trim();
 
-    try {
-      const sentMsg = await bot.sendMessage(PAYMENT_GROUP_ID, groupMsg, {
-        parse_mode: 'MarkdownV2',
-        reply_markup: {
-          inline_keyboard: [[
-            { text: '✅ Approve', callback_data: `approve:${requestId}` },
-            { text: '❌ Deny',    callback_data: `deny:${requestId}` },
-          ]],
-        },
-      });
+    awaitingLicenseKey.delete(userId);
 
-      // Track for approve/deny callback
-      pendingApprovals.set(requestId, {
-        chatId:      String(chatId),
-        userId,
-        packageName: pending.packageName,
-        credits:     pending.credits,
-        amountPHP:   pending.amountPHP,
-        licenseKey,
-        username:    msg.from.username || '',
-      });
-    } catch (e) {
-      console.error('[ERROR] Forward to payment group failed:', e.message);
+    // Move to receipt phase
+    awaitingReceipt.set(userId, {
+      credits: pending.credits,
+      amountPHP: pending.amountPHP,
+      licenseKey,
+    });
+
+    await bot.sendMessage(chatId,
+      [
+        `✅ *License key received:* \`${escMd(licenseKey)}\``,
+        ``,
+        `📸 Now please *send a photo* of your payment receipt or proof of payment\\.`,
+        ``,
+        `_Make sure the amount and reference number are clearly visible\\._`,
+      ].join('\n'),
+      { parse_mode: 'MarkdownV2', reply_markup: { force_reply: true, input_field_placeholder: 'Send photo here' } }
+    );
+    return;
+  }
+
+  // ── Phase 3: awaiting receipt photo ───────────────────────────────────────
+  if (awaitingReceipt.has(userId)) {
+    const pending = awaitingReceipt.get(userId);
+
+    // Accept photo or document as proof of payment
+    const hasPhoto    = Array.isArray(msg.photo) && msg.photo.length > 0;
+    const hasDocument = msg.document != null;
+
+    if (!hasPhoto && !hasDocument) {
+      // If the user sends text instead of a photo, remind them
+      if (msg.text && !msg.text.startsWith('/')) {
+        await bot.sendMessage(chatId,
+          `📸 Please *send a photo* of your payment receipt as proof of payment\\.`,
+          { parse_mode: 'MarkdownV2' }
+        );
+      }
+      return;
     }
+
+    awaitingReceipt.delete(userId);
+
+    // Create purchase request in backend
+    let requestId;
+    try {
+      const result = await apiPost('/api/bot/purchase-requests', {
+        telegramUserId: userId,
+        username: msg.from.username || msg.from.first_name || '',
+        chatId: String(chatId),
+        packageId: 0,
+        packageName: 'Custom',
+        credits: pending.credits,
+        amountPHP: pending.amountPHP,
+        licenseKey: pending.licenseKey,
+      });
+      requestId = result.id;
+    } catch (e) {
+      await bot.sendMessage(chatId,
+        `❌ Failed to submit your request: ${escMd(e.message)}\\. Please try again with /help\\.`,
+        { parse_mode: 'MarkdownV2' }
+      );
+      return;
+    }
+
+    // Confirm to user
+    await bot.sendMessage(chatId,
+      [
+        `✅ *Purchase Request Submitted\\!*`,
+        ``,
+        `🎟 Credits: *${escMd(String(pending.credits))}*`,
+        `💰 Amount: *${escMd(fmtPHP(pending.amountPHP))}*`,
+        `🔑 License: \`${escMd(pending.licenseKey)}\``,
+        `📋 Request ID: \`${escMd(String(requestId))}\``,
+        ``,
+        `Your payment proof has been forwarded to our team for review\\.`,
+        `You will be notified once it is approved or denied\\.`,
+        ``,
+        `⚠️ Reminder: Credits are *NON\\-REFUNDABLE* once confirmed\\.`,
+      ].join('\n'),
+      { parse_mode: 'MarkdownV2' }
+    );
+
+    // Forward receipt photo to payment group with approve/deny buttons
+    if (PAYMENT_GROUP_ID) {
+      const groupCaption = [
+        `💳 *New Purchase Request \\#${escMd(String(requestId))}*`,
+        ``,
+        `👤 User: @${escMd(msg.from.username || String(userId))} \\(ID: \`${escMd(userId)}\`\\)`,
+        `🎟 Credits: *${escMd(String(pending.credits))}*`,
+        `💰 Amount due: *${escMd(fmtPHP(pending.amountPHP))}*`,
+        `🔑 License: \`${escMd(pending.licenseKey)}\``,
+        `🕐 Time: ${escMd(fmtDate(new Date().toISOString()))}`,
+        ``,
+        `✅ Approve if payment amount matches\\. ❌ Deny if it does not\\.`,
+      ].join('\n');
+
+      const approvalKeyboard = {
+        inline_keyboard: [[
+          { text: '✅ Approve', callback_data: `approve:${requestId}` },
+          { text: '❌ Deny',    callback_data: `deny:${requestId}` },
+        ]],
+      };
+
+      try {
+        if (hasPhoto) {
+          // Use the highest-quality photo (last item in array)
+          const fileId = msg.photo[msg.photo.length - 1].file_id;
+          await bot.sendPhoto(PAYMENT_GROUP_ID, fileId, {
+            caption: groupCaption,
+            parse_mode: 'MarkdownV2',
+            reply_markup: approvalKeyboard,
+          });
+        } else {
+          // Document (PDF, etc.)
+          await bot.sendDocument(PAYMENT_GROUP_ID, msg.document.file_id, {
+            caption: groupCaption,
+            parse_mode: 'MarkdownV2',
+            reply_markup: approvalKeyboard,
+          });
+        }
+
+        // Track for approve/deny callback
+        pendingApprovals.set(requestId, {
+          chatId:     String(chatId),
+          userId,
+          credits:    pending.credits,
+          amountPHP:  pending.amountPHP,
+          licenseKey: pending.licenseKey,
+          username:   msg.from.username || '',
+        });
+      } catch (e) {
+        console.error('[ERROR] Forward to payment group failed:', e.message);
+      }
+    }
+    return;
+  }
+
+  // ── No active state ────────────────────────────────────────────────────────
+  // Ignore commands; for any other non-command text give a helpful nudge
+  if (msg.text && !msg.text.startsWith('/')) {
+    await bot.sendMessage(chatId,
+      `💡 Use /help to buy credits or /register to link your license key\\.`,
+      { parse_mode: 'MarkdownV2' }
+    );
   }
 });
 
