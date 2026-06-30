@@ -30,6 +30,29 @@ func botAPIRouter(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 
+	// ── Credit price (fixed price per credit) ─────────────────────────────────
+	case path == "/credit-price" && r.Method == http.MethodGet:
+		price := getConfigFloat("credit_price_php", 250.00)
+		writeJSON(w, 200, map[string]float64{"pricePerCredit": price})
+
+	// ── Check if Telegram user has a linked license ────────────────────────────
+	case strings.HasPrefix(path, "/licenses/check-telegram/") && r.Method == http.MethodGet:
+		tgUserID := strings.TrimPrefix(path, "/licenses/check-telegram/")
+		if tgUserID == "" {
+			writeJSON(w, 400, map[string]string{"error": "telegramUserId required"})
+			return
+		}
+		lic, err := dbGetLicenseByTelegramUserID(tgUserID)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		if lic == nil {
+			writeJSON(w, 200, map[string]interface{}{"registered": false})
+			return
+		}
+		writeJSON(w, 200, map[string]interface{}{"registered": true, "licenseKey": lic.Key, "credits": lic.Credits})
+
 	// ── Credit Packages ───────────────────────────────────────────────────────
 	case path == "/packages" && r.Method == http.MethodGet:
 		list, err := dbListPackages(true)
@@ -139,6 +162,19 @@ func botAPIRouter(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
 		}
+		// When approved and the request has a license key, automatically add credits.
+		creditAdded := false
+		if req.Status == "approved" && pr.LicenseKey != "" {
+			lic, lerr := dbGetLicenseByKey(pr.LicenseKey)
+			if lerr == nil && lic != nil {
+				if _, aerr := dbAdjustCredits(lic.ID, pr.Credits, fmt.Sprintf("purchase_approved:request_%d", id)); aerr != nil {
+					logWarn(fmt.Sprintf("Auto-credit add failed for request %d: %v", id, aerr))
+				} else {
+					creditAdded = true
+					logSuccess(fmt.Sprintf("Auto-added %d credits to license %s on approval of request %d", pr.Credits, pr.LicenseKey, id))
+				}
+			}
+		}
 		// Fetch updated record to return current state
 		updated, err := dbGetPurchaseRequest(id)
 		if err != nil || updated == nil {
@@ -147,7 +183,7 @@ func botAPIRouter(w http.ResponseWriter, r *http.Request) {
 			updated.AdminNote = req.AdminNote
 		}
 		logSuccess(fmt.Sprintf("Purchase request %d marked %s", id, req.Status))
-		writeJSON(w, 200, map[string]interface{}{"ok": true, "request": updated})
+		writeJSON(w, 200, map[string]interface{}{"ok": true, "request": updated, "creditAdded": creditAdded})
 
 	// ── Add credits via bot key (for /addcredits bot command) ─────────────────
 	case strings.HasPrefix(path, "/licenses/") && strings.HasSuffix(path, "/credits") && r.Method == http.MethodPost:
