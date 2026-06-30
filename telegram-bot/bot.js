@@ -217,7 +217,7 @@ bot.onText(/\/help/, async (msg) => {
     `/status \\— System health status`,
     `/credits \\<key\\> \\— Check credits for a license`,
     `/stats \\— Transaction stats`,
-    `/maintenance on|off \\— Toggle maintenance mode`,
+    `/maintenance on\\|off \\— Toggle maintenance mode`,
     `/broadcast \\<msg\\> \\— Send message to admin channel`,
     `/help \\— This message`,
   ].join('\n');
@@ -282,7 +282,7 @@ bot.onText(/\/stats/, async (msg) => {
 bot.onText(/\/maintenance (.+)/, async (msg, match) => {
   const arg = (match[1] || '').trim().toLowerCase();
   if (arg !== 'on' && arg !== 'off') {
-    await bot.sendMessage(msg.chat.id, 'Usage: /maintenance on|off', { parse_mode: 'MarkdownV2' }); return;
+    await bot.sendMessage(msg.chat.id, 'Usage: /maintenance on\\|off', { parse_mode: 'MarkdownV2' }); return;
   }
   try {
     await axios.post(`${API_URL}/api/admin/maintenance`, { enabled: arg === 'on' }, {
