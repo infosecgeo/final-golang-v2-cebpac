@@ -62,6 +62,14 @@ const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
 console.log('[INFO] AnasFlightsV2 Telegram bot started (polling).');
 
+// ── Purchase constants ────────────────────────────────────────────────────────
+
+const MAX_CREDITS_PER_PURCHASE  = 500;
+const DEFAULT_CREDIT_PRICE_PHP  = 250;   // must match config.go default (credit_price_php)
+const CUSTOM_PACKAGE_ID         = 0;
+const CUSTOM_PACKAGE_NAME       = 'Custom';
+const LICENSE_KEY_REGEX         = /^LIC-[A-Za-z0-9]{6,}$/i;
+
 // ── In-memory conversation state ───────────────────────────────────────────────
 
 // userId → { pricePerCredit }  (user accepted T&C, waiting to enter credit count)
@@ -673,10 +681,10 @@ bot.on('callback_query', async (query) => {
   // ── T&C accepted — proceed to credit count ────────────────────────────────
   if (data === 'tc_accept') {
     await bot.answerCallbackQuery(query.id);
-    let pricePerCredit = 250;
+    let pricePerCredit = DEFAULT_CREDIT_PRICE_PHP;
     try {
       const priceData = await apiGet('/api/bot/credit-price');
-      pricePerCredit = priceData.pricePerCredit || 250;
+      pricePerCredit = priceData.pricePerCredit || DEFAULT_CREDIT_PRICE_PHP;
     } catch (e) {
       console.warn('[WARN] Failed to fetch credit price:', e.message);
     }
@@ -765,8 +773,8 @@ bot.on('callback_query', async (query) => {
 
     if (info && info.chatId) {
       if (status === 'approved') {
-        // The backend auto-adds credits; creditAdded flag indicates success
-        const creditAdded = apiResult && apiResult.creditAdded !== false;
+        // The backend auto-adds credits; creditAdded flag is explicitly true on success
+        const creditAdded = apiResult && apiResult.creditAdded === true;
         const creditNote = creditAdded
           ? `✅ Credits have been added to your license\\.`
           : `⚠️ Credits could not be added automatically\\. Please contact support with your Request ID\\.`;
@@ -817,7 +825,6 @@ bot.on('message', async (msg) => {
 
     const pending = awaitingCreditCount.get(userId);
     const count = parseInt(msg.text.trim(), 10);
-    const MAX_CREDITS_PER_PURCHASE = 500;
 
     if (isNaN(count) || count < 1) {
       await bot.sendMessage(chatId,
@@ -885,7 +892,7 @@ bot.on('message', async (msg) => {
     const licenseKey = msg.text.trim();
 
     // Basic format validation: must start with LIC- and have at least 6 chars after
-    if (!/^LIC-[A-Za-z0-9]{6,}$/i.test(licenseKey)) {
+    if (!LICENSE_KEY_REGEX.test(licenseKey)) {
       await bot.sendMessage(chatId,
         `⚠️ Invalid license key format\\. License keys look like *LIC\\-XXXXXXXX*\\.\n\nPlease reply with your correct license key\\.`,
         { parse_mode: 'MarkdownV2' }
@@ -943,8 +950,8 @@ bot.on('message', async (msg) => {
         telegramUserId: userId,
         username: msg.from.username || msg.from.first_name || '',
         chatId: String(chatId),
-        packageId: 0,
-        packageName: 'Custom',
+        packageId: CUSTOM_PACKAGE_ID,
+        packageName: CUSTOM_PACKAGE_NAME,
         credits: pending.credits,
         amountPHP: pending.amountPHP,
         licenseKey: pending.licenseKey,
