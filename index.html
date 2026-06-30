@@ -1,253 +1,614 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pusa Pacific</title>
-    <style>
-        :root {
-            --bg: #0f1117;
-            --surface: #1a1d27;
-            --surface2: #212535;
-            --border: #2e3247;
-            --border-focus: #4f6ef7;
-            --text: #e2e4f0;
-            --text-muted: #6b7394;
-            --text-dim: #4a5068;
-            --accent: #4f6ef7;
-            --accent-hover: #6080ff;
-            --live: #22c55e;
-            --live-bg: rgba(34,197,94,.10);
-            --dead: #ef4444;
-            --dead-bg: rgba(239,68,68,.10);
-            --tag-bg: #2e3247;
-            --radius: 10px;
-            --radius-sm: 6px;
-            --shadow: 0 8px 32px rgba(0,0,0,.45);
-        }
-        * { margin:0; padding:0; box-sizing:border-box; }
-        body { font-family:'Segoe UI',system-ui,-apple-system,sans-serif; background:var(--bg); min-height:100vh; padding:32px 20px 60px; color:var(--text); }
-        .container { max-width:1060px; margin:0 auto; }
-        .header { text-align:center; margin-bottom:32px; }
-        .header-badge { display:inline-flex; align-items:center; gap:10px; background:var(--surface); border:1px solid var(--border); border-radius:50px; padding:8px 20px; font-size:13px; font-weight:600; color:var(--text-muted); letter-spacing:.6px; margin-bottom:14px; }
-        .dot { width:7px; height:7px; border-radius:50%; background:var(--accent); box-shadow:0 0 8px var(--accent); animation:pulse 2s infinite; }
-        @keyframes pulse { 0%,100%{opacity:1}50%{opacity:.35} }
-        .header-title { font-size:30px; font-weight:800; letter-spacing:-.5px; background:linear-gradient(135deg,#7b9cff 0%,#c084fc 60%,#f0abfc 100%); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
-        .header-sub { margin-top:6px; font-size:13px; color:var(--text-muted); }
-        .card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); padding:24px 28px; margin-bottom:16px; }
-        .card-title { font-size:10px; font-weight:700; letter-spacing:1.2px; text-transform:uppercase; color:var(--text-muted); margin-bottom:18px; display:flex; align-items:center; gap:8px; }
-        .card-title::after { content:''; flex:1; height:1px; background:var(--border); }
-        .form-group { margin-bottom:16px; }
-        .form-group:last-child { margin-bottom:0; }
-        .form-row { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-        label { display:flex; align-items:center; gap:6px; color:var(--text); font-size:13px; font-weight:600; margin-bottom:7px; }
-        label .tag { font-size:10px; font-weight:600; padding:2px 6px; border-radius:3px; background:var(--tag-bg); color:var(--text-muted); letter-spacing:.4px; }
-        label .tag.opt { color:#7b9cff; background:rgba(79,110,247,.15); }
-        textarea, select, input[type="text"] { width:100%; padding:9px 12px; background:var(--surface2); border:1px solid var(--border); border-radius:var(--radius-sm); color:var(--text); font-size:13px; font-family:'Cascadia Code','Fira Code','Courier New',monospace; resize:none; overflow:hidden; transition:border-color .2s,box-shadow .2s; line-height:1.5; }
-        textarea:focus, select:focus, input[type="text"]:focus { outline:none; border-color:var(--border-focus); box-shadow:0 0 0 3px rgba(79,110,247,.15); }
-        textarea::placeholder, input[type="text"]::placeholder { color:var(--text-dim); }
-        #hpp { height:110px; resize:vertical; overflow:auto; }
-        #card.multi { height:100px; resize:vertical; overflow:auto; }
-        select { cursor:pointer; -webkit-appearance:none; appearance:none; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7394' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 12px center; padding-right:32px; }
-        select option { background:var(--surface2); color:var(--text); }
-        .mode-toggle { display:flex; background:var(--surface2); border:1px solid var(--border); border-radius:var(--radius-sm); padding:3px; width:fit-content; }
-        .mode-toggle button { all:unset; padding:7px 22px; border-radius:5px; font-size:13px; font-weight:600; cursor:pointer; color:var(--text-muted); transition:all .2s; }
-        .mode-toggle button.active { background:var(--accent); color:#fff; box-shadow:0 2px 8px rgba(79,110,247,.4); }
-        .mode-toggle button:hover:not(.active) { color:var(--text); }
-        .submit-btn { width:100%; padding:13px; background:var(--accent); color:#fff; border:none; border-radius:var(--radius-sm); font-size:14px; font-weight:700; cursor:pointer; transition:all .25s; position:relative; overflow:hidden; }
-        .submit-btn:hover { background:var(--accent-hover); transform:translateY(-1px); box-shadow:0 4px 16px rgba(79,110,247,.4); }
-        .submit-btn:active { transform:translateY(0); }
-        .submit-btn.loading { background:#2e3a72; pointer-events:none; color:transparent; }
-        .submit-btn.loading::after { content:''; position:absolute; top:50%; left:50%; width:20px; height:20px; margin:-10px 0 0 -10px; border:2px solid rgba(255,255,255,.3); border-top-color:#fff; border-radius:50%; animation:spin .7s linear infinite; }
-        @keyframes spin { to{transform:rotate(360deg)} }
-        .count-label { font-size:11px; color:var(--text-muted); font-weight:400; background:var(--tag-bg); padding:2px 7px; border-radius:3px; }
-        .summary-card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); overflow:hidden; }
-        .summary-header { display:flex; align-items:center; gap:10px; padding:12px 18px; border-bottom:1px solid var(--border); background:var(--surface2); }
-        .summary-header-title { font-size:11px; font-weight:700; letter-spacing:1.2px; text-transform:uppercase; color:var(--text-muted); margin-right:auto; }
-        .badge { display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:700; padding:3px 10px; border-radius:50px; cursor:pointer; transition:all .2s; user-select:none; border:1px solid transparent; }
-        .badge.live { background:var(--live-bg); color:var(--live); border-color:rgba(34,197,94,.25); }
-        .badge.dead { background:var(--dead-bg); color:var(--dead); border-color:rgba(239,68,68,.25); }
-        .badge:hover { filter:brightness(1.2); }
-        .badge.dimmed { opacity:.3; }
-        .summary-cols { display:grid; grid-template-columns:1fr 1fr; }
-        .summary-col { position:relative; }
-        .summary-col:first-child { border-right:1px solid var(--border); }
-        .summary-col-header { display:flex; align-items:center; gap:7px; padding:10px 16px; font-size:11px; font-weight:700; letter-spacing:.8px; text-transform:uppercase; border-bottom:1px solid var(--border); cursor:pointer; user-select:none; transition:background .15s; }
-        .summary-col-header:hover { background:var(--surface2); }
-        .summary-col-header.live { color:var(--live); }
-        .summary-col-header.dead { color:var(--dead); }
-        .summary-col-header.active-filter { background:rgba(255,255,255,.04); }
-        .filter-hint { margin-left:auto; font-size:9px; font-weight:400; color:var(--text-dim); }
-        .summary-col-body { padding:10px 14px; max-height:430px; overflow-y:auto; }
-        .summary-col-body::-webkit-scrollbar { width:5px; }
-        .summary-col-body::-webkit-scrollbar-track { background:transparent; }
-        .summary-col-body::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
-        .summary-entry { font-size:12px; font-family:'Cascadia Code','Fira Code','Courier New',monospace; color:#c8cce0; padding:8px 0; border-bottom:1px solid rgba(46,50,71,.6); white-space:pre-wrap; word-break:break-word; animation:fadeIn .2s ease; line-height:1.6; }
-        .summary-entry:last-child { border-bottom:none; }
-        .summary-empty { display:block; font-size:12px; font-family:'Cascadia Code','Fira Code','Courier New',monospace; color:var(--text-dim); padding:22px 0; text-align:center; }
-        @keyframes fadeIn { from{opacity:0;transform:translateY(-3px)} to{opacity:1;transform:translateY(0)} }
-        @media(max-width:620px) { .form-row{grid-template-columns:1fr} .card{padding:18px 16px} .summary-cols{grid-template-columns:1fr} .summary-col:first-child{border-right:none;border-bottom:1px solid var(--border)} }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pusa Pacific</title>
+<style>
+:root{--bg:#0f1117;--surface:#1a1d27;--surface2:#212535;--border:#2e3247;--border-focus:#4f6ef7;--text:#e2e4f0;--muted:#6b7394;--dim:#4a5068;--accent:#4f6ef7;--accent-h:#6080ff;--live:#22c55e;--live-bg:rgba(34,197,94,.10);--dead:#ef4444;--dead-bg:rgba(239,68,68,.10);--warn:#f59e0b;--tag-bg:#2e3247;--radius:10px;--radius-sm:6px;--shadow:0 8px 32px rgba(0,0,0,.45)}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--bg);min-height:100vh;color:var(--text)}
+
+/* Login */
+#loginWrap{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
+.login-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:40px 36px;width:100%;max-width:420px;box-shadow:var(--shadow)}
+.login-logo{text-align:center;margin-bottom:24px}
+.login-logo h1{font-size:26px;font-weight:800;background:linear-gradient(135deg,#7b9cff 0%,#c084fc 60%,#f0abfc 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.login-logo p{font-size:13px;color:var(--muted);margin-top:4px}
+.login-tabs{display:flex;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:3px;margin-bottom:22px}
+.login-tab{flex:1;padding:8px;text-align:center;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer;border-radius:4px;transition:all .2s}
+.login-tab.active{background:var(--accent);color:#fff}
+.form-group{margin-bottom:14px}
+label{display:block;font-size:13px;font-weight:600;margin-bottom:6px;color:var(--text)}
+input[type=text],input[type=password]{width:100%;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:13px;font-family:inherit;transition:border-color .2s,box-shadow .2s}
+input:focus{outline:none;border-color:var(--border-focus);box-shadow:0 0 0 3px rgba(79,110,247,.15)}
+input::placeholder{color:var(--dim)}
+.btn-primary{width:100%;padding:12px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);font-size:14px;font-weight:700;cursor:pointer;transition:all .25s;position:relative;overflow:hidden}
+.btn-primary:hover{background:var(--accent-h);transform:translateY(-1px);box-shadow:0 4px 16px rgba(79,110,247,.4)}
+.btn-primary.loading{background:#2e3a72;pointer-events:none;color:transparent}
+.btn-primary.loading::after{content:'';position:absolute;top:50%;left:50%;width:18px;height:18px;margin:-9px 0 0 -9px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}
+.err-msg{color:var(--dead);font-size:12px;margin-bottom:10px}
+.admin-link{text-align:center;margin-top:16px;font-size:12px;color:var(--muted)}
+.admin-link a{color:var(--accent);text-decoration:none}
+.admin-link a:hover{text-decoration:underline}
+
+/* App */
+#appWrap{display:none;flex-direction:column;min-height:100vh;padding:32px 20px 60px}
+.container{max-width:1060px;margin:0 auto}
+.topbar{display:flex;align-items:center;gap:12px;margin-bottom:28px}
+.topbar-title{font-size:20px;font-weight:800;background:linear-gradient(135deg,#7b9cff 0%,#c084fc 60%,#f0abfc 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-right:auto}
+.credit-badge{display:inline-flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:5px 14px;font-size:13px;font-weight:700}
+.credit-badge .num{color:var(--accent);font-size:16px}
+.credit-badge.zero .num{color:var(--dead)}
+.btn-sm{padding:6px 14px;font-size:12px;font-weight:600;border:none;border-radius:5px;cursor:pointer;transition:all .2s;background:var(--surface);color:var(--muted);border:1px solid var(--border)}
+.btn-sm:hover{color:var(--text);border-color:var(--accent)}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:24px 28px;margin-bottom:16px}
+.card-title{font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin-bottom:18px;display:flex;align-items:center;gap:8px}
+.card-title::after{content:'';flex:1;height:1px;background:var(--border)}
+.form-group{margin-bottom:16px}
+.form-group:last-child{margin-bottom:0}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+textarea,select{width:100%;padding:9px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:13px;font-family:'Cascadia Code','Fira Code','Courier New',monospace;resize:none;overflow:hidden;transition:border-color .2s,box-shadow .2s;line-height:1.5}
+textarea:focus,select:focus{outline:none;border-color:var(--border-focus);box-shadow:0 0 0 3px rgba(79,110,247,.15)}
+textarea::placeholder{color:var(--dim)}
+#hpp{height:110px;resize:vertical;overflow:auto}
+#card.multi{height:100px;resize:vertical;overflow:auto}
+select{cursor:pointer;-webkit-appearance:none;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7394' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;padding-right:32px}
+select option{background:var(--surface2);color:var(--text)}
+.mode-toggle{display:flex;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:3px;width:fit-content}
+.mode-toggle button{all:unset;padding:7px 22px;border-radius:5px;font-size:13px;font-weight:600;cursor:pointer;color:var(--muted);transition:all .2s}
+.mode-toggle button.active{background:var(--accent);color:#fff;box-shadow:0 2px 8px rgba(79,110,247,.4)}
+.mode-toggle button:hover:not(.active){color:var(--text)}
+.submit-btn{width:100%;padding:13px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);font-size:14px;font-weight:700;cursor:pointer;transition:all .25s;position:relative;overflow:hidden}
+.submit-btn:hover{background:var(--accent-h);transform:translateY(-1px);box-shadow:0 4px 16px rgba(79,110,247,.4)}
+.submit-btn:active{transform:translateY(0)}
+.submit-btn.loading{background:#2e3a72;pointer-events:none;color:transparent}
+.submit-btn.loading::after{content:'';position:absolute;top:50%;left:50%;width:20px;height:20px;margin:-10px 0 0 -10px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent);animation:pulse 2s infinite}
+.count-label{font-size:11px;color:var(--muted);font-weight:400;background:var(--tag-bg);padding:2px 7px;border-radius:3px}
+label .tag{font-size:10px;font-weight:600;padding:2px 6px;border-radius:3px;background:var(--tag-bg);color:var(--muted);letter-spacing:.4px}
+label .tag.opt{color:#7b9cff;background:rgba(79,110,247,.15)}
+
+/* Progress */
+.progress-overlay{display:none;position:fixed;inset:0;background:rgba(15,17,23,.85);z-index:50;align-items:center;justify-content:center}
+.progress-overlay.show{display:flex}
+.progress-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:32px 36px;min-width:340px;max-width:420px;box-shadow:var(--shadow)}
+.progress-step{font-size:15px;font-weight:700;color:var(--text);margin-bottom:16px}
+.progress-bar-wrap{background:var(--surface2);border-radius:20px;height:10px;overflow:hidden;margin-bottom:8px}
+.progress-bar{height:100%;border-radius:20px;background:linear-gradient(90deg,var(--accent),#c084fc);transition:width .4s ease}
+.progress-pct{font-size:13px;color:var(--muted);text-align:right}
+.progress-log{margin-top:16px;max-height:120px;overflow-y:auto;font-size:11px;font-family:monospace;color:var(--muted);background:var(--surface2);padding:8px;border-radius:5px}
+
+/* Results */
+.summary-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
+.summary-header{display:flex;align-items:center;gap:10px;padding:12px 18px;border-bottom:1px solid var(--border);background:var(--surface2)}
+.summary-header-title{font-size:11px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:var(--muted);margin-right:auto}
+.badge{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;padding:3px 10px;border-radius:50px;cursor:pointer;transition:all .2s;user-select:none;border:1px solid transparent}
+.badge.live{background:var(--live-bg);color:var(--live);border-color:rgba(34,197,94,.25)}
+.badge.dead{background:var(--dead-bg);color:var(--dead);border-color:rgba(239,68,68,.25)}
+.badge:hover{filter:brightness(1.2)}
+.badge.dimmed{opacity:.3}
+.summary-cols{display:grid;grid-template-columns:1fr 1fr}
+.summary-col{position:relative}
+.summary-col:first-child{border-right:1px solid var(--border)}
+.summary-col-header{display:flex;align-items:center;gap:7px;padding:10px 16px;font-size:11px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;border-bottom:1px solid var(--border);cursor:pointer;user-select:none;transition:background .15s}
+.summary-col-header:hover{background:var(--surface2)}
+.summary-col-header.live{color:var(--live)}
+.summary-col-header.dead{color:var(--dead)}
+.summary-col-body{padding:10px 14px;max-height:430px;overflow-y:auto}
+.summary-col-body::-webkit-scrollbar{width:5px}
+.summary-col-body::-webkit-scrollbar-track{background:transparent}
+.summary-col-body::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+.summary-entry{font-size:12px;font-family:'Cascadia Code','Fira Code','Courier New',monospace;color:#c8cce0;padding:8px 0;border-bottom:1px solid rgba(46,50,71,.6);white-space:pre-wrap;word-break:break-word;animation:fadeIn .2s ease;line-height:1.6}
+.summary-entry:last-child{border-bottom:none}
+.summary-empty{display:block;font-size:12px;font-family:'Cascadia Code','Fira Code','Courier New',monospace;color:var(--dim);padding:22px 0;text-align:center}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-3px)}to{opacity:1;transform:translateY(0)}}
+
+/* Toast */
+.toast-container{position:fixed;bottom:24px;right:24px;z-index:200;display:flex;flex-direction:column-reverse;gap:8px;pointer-events:none}
+.toast{padding:12px 16px;border-radius:8px;font-size:13px;font-weight:600;animation:slideIn .2s ease;max-width:320px;pointer-events:auto}
+.toast.success{background:#14532d;color:#86efac;border:1px solid #166534}
+.toast.error{background:#450a0a;color:#fca5a5;border:1px solid #991b1b}
+.toast.info{background:#1e3a5f;color:#93c5fd;border:1px solid #1d4ed8}
+@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
+
+/* Credit modal */
+.credit-modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;align-items:center;justify-content:center}
+.credit-modal.open{display:flex}
+.credit-modal-box{background:var(--surface);border:1px solid var(--dead);border-radius:var(--radius);padding:32px;max-width:380px;width:100%;text-align:center;box-shadow:var(--shadow)}
+.credit-modal-icon{font-size:48px;margin-bottom:12px}
+.credit-modal-title{font-size:18px;font-weight:800;color:var(--dead);margin-bottom:8px}
+.credit-modal-msg{font-size:14px;color:var(--muted);margin-bottom:20px}
+.credit-modal-actions{display:flex;gap:10px;justify-content:center}
+
+@media(max-width:620px){.form-row{grid-template-columns:1fr}.card{padding:18px 16px}.summary-cols{grid-template-columns:1fr}.summary-col:first-child{border-right:none;border-bottom:1px solid var(--border)}.topbar{flex-wrap:wrap}}
+</style>
 </head>
 <body>
-<div class="container">
 
-    <div class="header">
-        <div class="header-badge"><span class="dot"></span>PUSA PACIFIC TERMINAL</div>
-        <div class="header-title">✈️ Pusa Pacific</div>
-        <div class="header-sub">Flight booking payment processor</div>
+<!-- Login Screen -->
+<div id="loginWrap">
+  <div class="login-card">
+    <div class="login-logo">
+      <h1>✈️ Pusa Pacific</h1>
+      <p>Flight booking payment processor</p>
+    </div>
+    <div id="loginErr" class="err-msg" style="display:none"></div>
+    <div class="form-group">
+      <label>License Key</label>
+      <input type="text" id="licenseKeyInput" placeholder="LIC-XXXXXXXXXXXXXXXX" autocomplete="off">
+    </div>
+    <button class="btn-primary" id="loginBtn" onclick="doLogin()">Access System</button>
+    <div class="admin-link"><a href="/admin">Administrator Access</a></div>
+  </div>
+</div>
+
+<!-- App Screen -->
+<div id="appWrap">
+  <div class="container">
+
+    <div class="topbar">
+      <span style="display:inline-flex;align-items:center;gap:8px">
+        <span class="dot"></span>
+        <span style="font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.6px">PUSA PACIFIC TERMINAL</span>
+      </span>
+      <div class="topbar-title" style="margin-left:8px">✈️ Pusa Pacific</div>
+      <div class="credit-badge" id="creditBadge">
+        <span style="font-size:12px;color:var(--muted)">Credits:</span>
+        <span class="num" id="creditNum">—</span>
+      </div>
+      <button class="btn-sm" onclick="doLogout()">Logout</button>
     </div>
 
     <div class="card">
-        <div class="card-title">Mode</div>
-        <div class="form-group">
-            <label>Operation Mode:</label>
-            <div class="mode-toggle">
-                <button type="button" id="btnManual" class="active" onclick="setMode('manual')">Manual Hit</button>
-                <button type="button" id="btnAuto" onclick="setMode('auto')">Automatic Hit</button>
-            </div>
+      <div class="card-title">Mode</div>
+      <div class="form-group">
+        <label>Operation Mode:</label>
+        <div class="mode-toggle">
+          <button type="button" id="btnManual" class="active" onclick="setMode('manual')">Manual Hit</button>
+          <button type="button" id="btnAuto" onclick="setMode('auto')">Automatic Hit</button>
         </div>
-        <div class="form-group" style="margin-bottom:0">
-            <label for="card">Card Number <span id="cardCountLabel" class="count-label" style="display:none"></span></label>
-            <textarea id="card" placeholder="1234567890123456|12|2027"></textarea>
-        </div>
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label for="card">Card Number <span id="cardCountLabel" class="count-label" style="display:none"></span></label>
+        <textarea id="card" placeholder="1234567890123456|12|2027"></textarea>
+      </div>
     </div>
 
     <form id="payForm">
-        <input type="hidden" id="modeHidden" name="mode" value="manual">
-        <input type="hidden" id="cardHidden" name="card" value="">
+      <input type="hidden" id="modeHidden" name="mode" value="manual">
+      <input type="hidden" id="cardHidden" name="card" value="">
 
-        <div id="manualFields" class="card">
-            <div class="card-title">Manual Mode</div>
-            <div class="form-group">
-                <label for="bearerToken">Authorization Bearer <span class="tag opt">OPTIONAL</span></label>
-                <textarea id="bearerToken" name="bearerToken" placeholder="eyJhbGci..."></textarea>
-            </div>
-            <div class="form-group">
-                <label for="xAuthToken">X-Auth-Token <span class="tag opt">OPTIONAL</span></label>
-                <textarea id="xAuthToken" name="xAuthToken" placeholder="eyJhbGci..."></textarea>
-            </div>
-            <div class="form-group">
-                <label for="hpp">HPP Content <span class="tag">REQUIRED</span></label>
-                <textarea id="hpp" name="hpp" placeholder="Paste HPP content here"></textarea>
-            </div>
+      <div id="manualFields" class="card">
+        <div class="card-title">Manual Mode</div>
+        <div class="form-group">
+          <label for="bearerToken">Authorization ****** class="tag opt">OPTIONAL</span></label>
+          <textarea id="bearerToken" name="bearerToken" placeholder="eyJhbGci..."></textarea>
         </div>
+        <div class="form-group">
+          <label for="xAuthToken">X-Auth-Token <span class="tag opt">OPTIONAL</span></label>
+          <textarea id="xAuthToken" name="xAuthToken" placeholder="eyJhbGci..."></textarea>
+        </div>
+        <div class="form-group">
+          <label for="hpp">HPP Content <span class="tag">REQUIRED</span></label>
+          <textarea id="hpp" name="hpp" placeholder="Paste HPP content here"></textarea>
+        </div>
+      </div>
 
-        <div id="autoFields" class="card" style="display:none">
-            <div class="card-title">Automatic Mode — Coming Soon</div>
-        </div>
+      <div id="autoFields" class="card" style="display:none">
+        <div class="card-title">Automatic Mode — Coming Soon</div>
+      </div>
 
-        <div class="card" style="padding:16px 28px">
-            <button type="submit" class="submit-btn" id="submitBtn">Submit</button>
-        </div>
+      <div class="card" style="padding:16px 28px">
+        <button type="submit" class="submit-btn" id="submitBtn">Submit</button>
+      </div>
     </form>
 
     <div class="summary-card">
-        <div class="summary-header">
-            <span class="summary-header-title">Results</span>
-            <span class="badge live" id="liveBadge" onclick="toggleFilter('live')">✓ LIVE <span id="liveCount">0</span></span>
-            <span class="badge dead" id="deadBadge" onclick="toggleFilter('dead')">✗ DEAD <span id="deadCount">0</span></span>
+      <div class="summary-header">
+        <span class="summary-header-title">Results</span>
+        <span class="badge live" id="liveBadge" onclick="toggleFilter('live')">✓ LIVE <span id="liveCount">0</span></span>
+        <span class="badge dead" id="deadBadge" onclick="toggleFilter('dead')">✗ DEAD <span id="deadCount">0</span></span>
+      </div>
+      <div class="summary-cols">
+        <div class="summary-col">
+          <div class="summary-col-header live" id="liveHeader" onclick="toggleFilter('live')">✓ Live</div>
+          <div class="summary-col-body" id="liveCards"><span class="summary-empty">No results yet</span></div>
         </div>
-        <div class="summary-cols">
-            <div class="summary-col">
-                <div class="summary-col-header live" id="liveHeader" onclick="toggleFilter('live')">✓ Live <span class="filter-hint">click to filter</span></div>
-                <div class="summary-col-body" id="liveCards"><span class="summary-empty">No results yet</span></div>
-            </div>
-            <div class="summary-col">
-                <div class="summary-col-header dead" id="deadHeader" onclick="toggleFilter('dead')">✗ Dead <span class="filter-hint">click to filter</span></div>
-                <div class="summary-col-body" id="deadCards"><span class="summary-empty">No results yet</span></div>
-            </div>
+        <div class="summary-col">
+          <div class="summary-col-header dead" id="deadHeader" onclick="toggleFilter('dead')">✗ Dead</div>
+          <div class="summary-col-body" id="deadCards"><span class="summary-empty">No results yet</span></div>
         </div>
+      </div>
     </div>
 
+  </div>
 </div>
+
+<!-- Progress Overlay -->
+<div class="progress-overlay" id="progressOverlay">
+  <div class="progress-box">
+    <div class="progress-step" id="progressStep">Initializing...</div>
+    <div class="progress-bar-wrap">
+      <div class="progress-bar" id="progressBar" style="width:0%"></div>
+    </div>
+    <div class="progress-pct" id="progressPct">0%</div>
+    <div class="progress-log" id="progressLog"></div>
+  </div>
+</div>
+
+<!-- Insufficient Credits Modal -->
+<div class="credit-modal" id="creditModal">
+  <div class="credit-modal-box">
+    <div class="credit-modal-icon">💳</div>
+    <div class="credit-modal-title">Insufficient Credits</div>
+    <div class="credit-modal-msg">Your account currently has no remaining credits.<br>Please contact your administrator.</div>
+    <div class="credit-modal-actions">
+      <button class="btn-primary" style="width:auto;padding:10px 24px" onclick="closeCreditModal()">OK</button>
+    </div>
+    <div style="margin-top:14px;text-align:center">
+      <label style="font-size:12px;color:var(--muted);display:inline-flex;align-items:center;gap:6px;cursor:pointer">
+        <input type="checkbox" id="dontShowCredits" style="width:auto;margin:0"> Don't show again
+      </label>
+    </div>
+  </div>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toastContainer"></div>
+
 <script>
-    const cardEl = document.getElementById('card');
-    let currentMode = 'manual';
+const LS = {
+  get: k => { try { return JSON.parse(localStorage.getItem('pp_'+k)); } catch(e) { return null; } },
+  set: (k,v) => { try { localStorage.setItem('pp_'+k, JSON.stringify(v)); } catch(e){} },
+  del: k => { try { localStorage.removeItem('pp_'+k); } catch(e){} }
+};
 
-    function setMode(mode) {
-        currentMode = mode;
-        document.getElementById('modeHidden').value = mode;
-        const isAuto = mode === 'auto';
-        document.getElementById('btnManual').classList.toggle('active', !isAuto);
-        document.getElementById('btnAuto').classList.toggle('active', isAuto);
-        document.getElementById('manualFields').style.display = isAuto ? 'none' : 'block';
-        document.getElementById('autoFields').style.display = isAuto ? 'block' : 'none';
-        if (isAuto) {
-            cardEl.classList.add('multi');
-            cardEl.placeholder = '4111111111111111|12|2027\n4222222222222222|11|2026\n(one card per line)';
-        } else {
-            cardEl.classList.remove('multi');
-            cardEl.placeholder = '1234567890123456|12|2027';
-            document.getElementById('cardCountLabel').style.display = 'none';
-        }
-    }
+let token = LS.get('token') || '';
+let credits = LS.get('credits') || 0;
+let currentMode = 'manual';
+let liveTotal = 0, deadTotal = 0, activeFilter = null;
 
-    ['bearerToken','xAuthToken','hpp'].forEach(function(id) {
-        var el = document.getElementById(id);
-        if (!el) return;
-        el.addEventListener('input', function() { this.value = this.value.replace(/\s/g, ''); });
-        el.addEventListener('keydown', function(e) { if (e.key === ' ' || e.keyCode === 32) e.preventDefault(); });
+// ── Progress steps ─────────────────────────────────────────────────────────────
+const STEPS = [
+  {label:'Initializing...', pct:10},
+  {label:'Bot Challenge...', pct:22},
+  {label:'Creating Session...', pct:35},
+  {label:'HPP Processing...', pct:48},
+  {label:'Payment Authorization...', pct:62},
+  {label:'3DS Processing...', pct:75},
+  {label:'Finalizing Payment...', pct:85},
+  {label:'Fetching Itinerary...', pct:94},
+  {label:'Completing...', pct:98},
+];
+let progressTimer = null, stepIdx = 0;
+
+function showProgress() {
+  stepIdx = 0;
+  document.getElementById('progressOverlay').classList.add('show');
+  document.getElementById('progressLog').textContent = '';
+  setProgress(STEPS[0].label, STEPS[0].pct);
+  progressTimer = setInterval(() => {
+    stepIdx = Math.min(stepIdx+1, STEPS.length-1);
+    const s = STEPS[stepIdx];
+    setProgress(s.label, s.pct);
+    appendProgressLog(s.label);
+  }, 2800);
+}
+
+function hideProgress(success) {
+  clearInterval(progressTimer);
+  if (success) {
+    setProgress('Completed ✓', 100);
+    setTimeout(() => document.getElementById('progressOverlay').classList.remove('show'), 800);
+  } else {
+    setProgress('Failed ✗', 100);
+    setTimeout(() => document.getElementById('progressOverlay').classList.remove('show'), 600);
+  }
+}
+
+function setProgress(step, pct) {
+  document.getElementById('progressStep').textContent = step;
+  document.getElementById('progressBar').style.width = pct+'%';
+  document.getElementById('progressPct').textContent = pct+'%';
+}
+
+function appendProgressLog(msg) {
+  const el = document.getElementById('progressLog');
+  el.textContent += (el.textContent ? '\n' : '') + '» ' + msg;
+  el.scrollTop = el.scrollHeight;
+}
+
+// ── Auth ─────────────────────────────────────────────────────────────────────
+
+async function doLogin() {
+  const key = document.getElementById('licenseKeyInput').value.trim();
+  const err = document.getElementById('loginErr');
+  if (!key) { showLoginErr('License key required'); return; }
+  const btn = document.getElementById('loginBtn');
+  btn.classList.add('loading');
+  err.style.display = 'none';
+  try {
+    const r = await fetch('/api/user/login', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({licenseKey: key})
     });
+    const d = await r.json();
+    if (!r.ok) { showLoginErr(d.error || 'Login failed'); btn.classList.remove('loading'); return; }
+    token = d.token;
+    credits = d.credits || 0;
+    LS.set('token', token);
+    LS.set('credits', credits);
+    showApp();
+  } catch(e) { showLoginErr('Network error: ' + e.message); }
+  btn.classList.remove('loading');
+}
 
-    var activeFilter = null;
+function showLoginErr(msg) {
+  const el = document.getElementById('loginErr');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
 
-    function toggleFilter(type) {
-        var liveH = document.getElementById('liveHeader');
-        var deadH = document.getElementById('deadHeader');
-        var liveB = document.getElementById('liveBadge');
-        var deadB = document.getElementById('deadBadge');
-        if (activeFilter === type) {
-            activeFilter = null;
-            liveH.classList.remove('active-filter'); deadH.classList.remove('active-filter');
-            liveB.classList.remove('dimmed'); deadB.classList.remove('dimmed');
-            document.querySelectorAll('#liveCards .summary-entry, #deadCards .summary-entry').forEach(function(el) { el.style.display = ''; });
-        } else {
-            activeFilter = type;
-            liveH.classList.toggle('active-filter', type === 'live'); deadH.classList.toggle('active-filter', type === 'dead');
-            liveB.classList.toggle('dimmed', type !== 'live'); deadB.classList.toggle('dimmed', type !== 'dead');
-            document.querySelectorAll('#liveCards .summary-entry').forEach(function(el) { el.style.display = type === 'live' ? '' : 'none'; });
-            document.querySelectorAll('#deadCards .summary-entry').forEach(function(el) { el.style.display = type === 'dead' ? '' : 'none'; });
-        }
+async function doLogout() {
+  try {
+    await fetch('/api/logout', {method:'POST', headers:{'Authorization':'Bearer '+token}});
+  } catch(e){}
+  token = '';
+  LS.del('token');
+  LS.del('credits');
+  document.getElementById('appWrap').style.display = 'none';
+  document.getElementById('loginWrap').style.display = 'flex';
+}
+
+async function checkAuth() {
+  if (!token) { restoreLoginInputs(); return; }
+  try {
+    const r = await fetch('/api/user/me', {headers:{'Authorization':'Bearer '+token}});
+    if (r.ok) {
+      const d = await r.json();
+      credits = d.credits || 0;
+      LS.set('credits', credits);
+      showApp();
+      return;
     }
+  } catch(e){}
+  token = '';
+  LS.del('token');
+  restoreLoginInputs();
+}
 
-    var liveTotal = 0, deadTotal = 0;
+function restoreLoginInputs() {
+  // Restore license key from localStorage
+  const saved = LS.get('lastLicenseKey');
+  if (saved) document.getElementById('licenseKeyInput').value = saved;
+  // Restore tokens and hpp
+  const savedBearer = LS.get('bearerToken');
+  if (savedBearer) document.getElementById('bearerToken').value = savedBearer;
+  const savedXAuth = LS.get('xAuthToken');
+  if (savedXAuth) document.getElementById('xAuthToken').value = savedXAuth;
+  const savedHpp = LS.get('hpp');
+  if (savedHpp) document.getElementById('hpp').value = savedHpp;
+}
 
-    function appendResult(message, isLive) {
-        if (isLive) { liveTotal++; document.getElementById('liveCount').textContent = liveTotal; }
-        else { deadTotal++; document.getElementById('deadCount').textContent = deadTotal; }
-        var colId = isLive ? 'liveCards' : 'deadCards';
-        var colEl = document.getElementById(colId);
-        var empty = colEl.querySelector('.summary-empty');
-        if (empty) empty.remove();
-        var entry = document.createElement('div');
-        entry.className = 'summary-entry';
-        entry.textContent = message;
-        if (activeFilter && activeFilter !== (isLive ? 'live' : 'dead')) entry.style.display = 'none';
-        colEl.appendChild(entry);
-        colEl.scrollTop = colEl.scrollHeight;
-    }
+function showApp() {
+  document.getElementById('loginWrap').style.display = 'none';
+  document.getElementById('appWrap').style.display = 'flex';
+  updateCreditsDisplay();
+  restoreInputs();
+  // Check for zero credits
+  checkCreditModal();
+}
 
-    document.getElementById('payForm').addEventListener('submit', async function(e) {
-        e.preventDefault();
-        var btn = document.getElementById('submitBtn');
-        var cardVal = cardEl.value.trim();
-        document.getElementById('cardHidden').value = cardVal;
-        btn.classList.add('loading');
-        try {
-            var fd = new FormData(this);
-            fd.set('card', cardVal);
-            var res = await fetch('/pay', { method: 'POST', body: fd });
-            var result = await res.json();
-            var display = 'Card: ' + cardVal + (result.message ? '\nMessage: ' + result.message : '');
-            appendResult(display, result.success === true);
-        } catch(err) {
-            appendResult('Error: ' + err.message, false);
-        }
-        btn.classList.remove('loading');
+function updateCreditsDisplay() {
+  const badge = document.getElementById('creditBadge');
+  const num = document.getElementById('creditNum');
+  num.textContent = credits;
+  if (credits <= 0) {
+    badge.classList.add('zero');
+  } else {
+    badge.classList.remove('zero');
+  }
+}
+
+function checkCreditModal() {
+  if (credits <= 0 && !LS.get('hideCreditModal')) {
+    document.getElementById('creditModal').classList.add('open');
+  }
+}
+
+function closeCreditModal() {
+  document.getElementById('creditModal').classList.remove('open');
+  if (document.getElementById('dontShowCredits').checked) {
+    LS.set('hideCreditModal', true);
+  }
+}
+
+// ── LocalStorage persistence ────────────────────────────────────────────────
+
+function restoreInputs() {
+  const fields = ['bearerToken','xAuthToken','hpp'];
+  fields.forEach(id => {
+    const saved = LS.get(id);
+    if (saved) document.getElementById(id).value = saved;
+  });
+  const savedMode = LS.get('mode');
+  if (savedMode) setMode(savedMode);
+  const savedProxy = LS.get('proxyUrl');
+  // proxyUrl is backend config; just restore frontend fields
+}
+
+function persistInput(id) {
+  const el = document.getElementById(id);
+  if (el) LS.set(id, el.value);
+}
+
+// Attach persistence listeners
+['bearerToken','xAuthToken','hpp'].forEach(id => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener('input', function() {
+    this.value = this.value.replace(/\s/g, '');
+    persistInput(id);
+  });
+  el.addEventListener('keydown', e => { if (e.key === ' ' || e.keyCode === 32) e.preventDefault(); });
+});
+
+// ── Mode ─────────────────────────────────────────────────────────────────────
+
+const cardEl = document.getElementById('card');
+function setMode(mode) {
+  currentMode = mode;
+  document.getElementById('modeHidden').value = mode;
+  LS.set('mode', mode);
+  const isAuto = mode === 'auto';
+  document.getElementById('btnManual').classList.toggle('active', !isAuto);
+  document.getElementById('btnAuto').classList.toggle('active', isAuto);
+  document.getElementById('manualFields').style.display = isAuto ? 'none' : 'block';
+  document.getElementById('autoFields').style.display = isAuto ? 'block' : 'none';
+  if (isAuto) {
+    cardEl.classList.add('multi');
+    cardEl.placeholder = '4111111111111111|12|2027\n4222222222222222|11|2026\n(one card per line)';
+  } else {
+    cardEl.classList.remove('multi');
+    cardEl.placeholder = '1234567890123456|12|2027';
+    document.getElementById('cardCountLabel').style.display = 'none';
+  }
+}
+
+// ── Results filter ────────────────────────────────────────────────────────────
+
+function toggleFilter(type) {
+  const liveH = document.getElementById('liveHeader');
+  const deadH = document.getElementById('deadHeader');
+  const liveB = document.getElementById('liveBadge');
+  const deadB = document.getElementById('deadBadge');
+  if (activeFilter === type) {
+    activeFilter = null;
+    liveH.classList.remove('active-filter'); deadH.classList.remove('active-filter');
+    liveB.classList.remove('dimmed'); deadB.classList.remove('dimmed');
+    document.querySelectorAll('#liveCards .summary-entry, #deadCards .summary-entry').forEach(el => el.style.display = '');
+  } else {
+    activeFilter = type;
+    liveH.classList.toggle('active-filter', type==='live'); deadH.classList.toggle('active-filter', type==='dead');
+    liveB.classList.toggle('dimmed', type!=='live'); deadB.classList.toggle('dimmed', type!=='dead');
+    document.querySelectorAll('#liveCards .summary-entry').forEach(el => el.style.display = type==='live' ? '' : 'none');
+    document.querySelectorAll('#deadCards .summary-entry').forEach(el => el.style.display = type==='dead' ? '' : 'none');
+  }
+}
+
+function appendResult(message, isLive) {
+  if (isLive) { liveTotal++; document.getElementById('liveCount').textContent = liveTotal; }
+  else { deadTotal++; document.getElementById('deadCount').textContent = deadTotal; }
+  const colId = isLive ? 'liveCards' : 'deadCards';
+  const colEl = document.getElementById(colId);
+  const empty = colEl.querySelector('.summary-empty');
+  if (empty) empty.remove();
+  const entry = document.createElement('div');
+  entry.className = 'summary-entry';
+  entry.textContent = message;
+  if (activeFilter && activeFilter !== (isLive ? 'live' : 'dead')) entry.style.display = 'none';
+  colEl.appendChild(entry);
+  colEl.scrollTop = colEl.scrollHeight;
+}
+
+// ── Payment form ─────────────────────────────────────────────────────────────
+
+document.getElementById('payForm').addEventListener('submit', async function(e) {
+  e.preventDefault();
+  if (credits <= 0) {
+    document.getElementById('creditModal').classList.add('open');
+    return;
+  }
+  const btn = document.getElementById('submitBtn');
+  const cardVal = cardEl.value.trim();
+  document.getElementById('cardHidden').value = cardVal;
+  btn.classList.add('loading');
+  showProgress();
+
+  try {
+    const fd = new FormData(this);
+    fd.set('card', cardVal);
+
+    const res = await fetch('/pay', {
+      method:'POST',
+      body: fd,
+      headers: {'Authorization': 'Bearer ' + token}
     });
+    const result = await res.json();
 
-    setMode('manual');
+    hideProgress(result.success === true);
+
+    if (result.message === 'INSUFFICIENT_CREDITS') {
+      document.getElementById('creditModal').classList.add('open');
+      btn.classList.remove('loading');
+      return;
+    }
+
+    let display = 'Card: ' + cardVal;
+    if (result.message) display += '\n' + result.message;
+    if (result.recordLocator && result.recordLocator !== 'N/A') {
+      display += '\n\nRecord Locator: ' + result.recordLocator;
+    }
+    if (result.passengerName) display += '\nPassenger: ' + result.passengerName;
+    if (result.flightRoute) display += '\nFlight: ' + result.flightRoute;
+    if (result.flightNumber) display += ' (' + result.flightNumber + ')';
+    if (result.bookingStatus) display += '\nStatus: ' + result.bookingStatus;
+    if (result.paymentStatus) display += '\nPayment: ' + result.paymentStatus;
+    if (result.authTime) display += '\nTime: ' + new Date(result.authTime).toLocaleString();
+
+    appendResult(display, result.success === true);
+
+    if (result.success === true) {
+      toast('Payment Authorized! ' + (result.recordLocator ? 'Locator: '+result.recordLocator : ''), 'success');
+      if (result.credits !== undefined) {
+        credits = result.credits;
+        LS.set('credits', credits);
+        updateCreditsDisplay();
+      }
+    } else {
+      toast('Transaction declined: ' + (result.message || 'Unknown error'), 'error');
+    }
+  } catch(err) {
+    hideProgress(false);
+    appendResult('Error: ' + err.message, false);
+    toast('Request failed: ' + err.message, 'error');
+  }
+  btn.classList.remove('loading');
+});
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+
+function toast(msg, type='info') {
+  const c = document.getElementById('toastContainer');
+  const el = document.createElement('div');
+  el.className = 'toast ' + type;
+  el.textContent = msg;
+  c.appendChild(el);
+  setTimeout(() => {
+    el.style.opacity = '0';
+    el.style.transition = 'opacity .3s';
+    setTimeout(() => el.remove(), 300);
+  }, 4000);
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+
+document.getElementById('licenseKeyInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') doLogin();
+});
+document.getElementById('licenseKeyInput').addEventListener('input', function() {
+  LS.set('lastLicenseKey', this.value);
+});
+
+// Restore license key input on page load
+const savedKey = LS.get('lastLicenseKey');
+if (savedKey) document.getElementById('licenseKeyInput').value = savedKey;
+
+setMode('manual');
+checkAuth();
 </script>
 </body>
 </html>

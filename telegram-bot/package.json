@@ -1,0 +1,21 @@
+{
+  "name": "pusa-pacific-telegram-bot",
+  "version": "1.0.0",
+  "description": "Telegram notification bot for Pusa Pacific payment processor",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "NODE_ENV=development node bot.js"
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.66.0",
+    "axios": "^1.7.2",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}
