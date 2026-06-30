@@ -163,12 +163,14 @@ func botAPIRouter(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// When approved and the request has a license key, automatically add credits.
+		creditAdded := false
 		if req.Status == "approved" && pr.LicenseKey != "" {
 			lic, lerr := dbGetLicenseByKey(pr.LicenseKey)
 			if lerr == nil && lic != nil {
 				if _, aerr := dbAdjustCredits(lic.ID, pr.Credits, fmt.Sprintf("purchase_approved:request_%d", id)); aerr != nil {
 					logWarn(fmt.Sprintf("Auto-credit add failed for request %d: %v", id, aerr))
 				} else {
+					creditAdded = true
 					logSuccess(fmt.Sprintf("Auto-added %d credits to license %s on approval of request %d", pr.Credits, pr.LicenseKey, id))
 				}
 			}
@@ -181,7 +183,7 @@ func botAPIRouter(w http.ResponseWriter, r *http.Request) {
 			updated.AdminNote = req.AdminNote
 		}
 		logSuccess(fmt.Sprintf("Purchase request %d marked %s", id, req.Status))
-		writeJSON(w, 200, map[string]interface{}{"ok": true, "request": updated})
+		writeJSON(w, 200, map[string]interface{}{"ok": true, "request": updated, "creditAdded": creditAdded})
 
 	// ── Add credits via bot key (for /addcredits bot command) ─────────────────
 	case strings.HasPrefix(path, "/licenses/") && strings.HasSuffix(path, "/credits") && r.Method == http.MethodPost:

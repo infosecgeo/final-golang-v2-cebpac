@@ -757,15 +757,19 @@ bot.on('callback_query', async (query) => {
 
     // Notify user — use in-memory state or fall back to DB response data
     const info = pendingInfo || (apiResult && apiResult.request ? {
-      chatId:      apiResult.request.chatId,
-      packageName: apiResult.request.packageName,
-      credits:     apiResult.request.credits,
-      amountPHP:   apiResult.request.amountPHP,
-      licenseKey:  apiResult.request.licenseKey,
+      chatId:     apiResult.request.chatId,
+      credits:    apiResult.request.credits,
+      amountPHP:  apiResult.request.amountPHP,
+      licenseKey: apiResult.request.licenseKey,
     } : null);
 
     if (info && info.chatId) {
       if (status === 'approved') {
+        // The backend auto-adds credits; creditAdded flag indicates success
+        const creditAdded = apiResult && apiResult.creditAdded !== false;
+        const creditNote = creditAdded
+          ? `✅ Credits have been added to your license\\.`
+          : `⚠️ Credits could not be added automatically\\. Please contact support with your Request ID\\.`;
         await bot.sendMessage(info.chatId,
           [
             `🎉 *Your purchase request has been APPROVED\\!*`,
@@ -774,7 +778,8 @@ bot.on('callback_query', async (query) => {
             `💰 Amount: *${escMd(fmtPHP(info.amountPHP))}*`,
             `🔑 License: \`${escMd(info.licenseKey || 'N/A')}\``,
             ``,
-            `✅ Credits have been added to your license\\. Thank you for your purchase\\! ✈️`,
+            creditNote,
+            `Thank you for your purchase\\! ✈️`,
           ].join('\n'),
           { parse_mode: 'MarkdownV2' }
         );
@@ -812,10 +817,19 @@ bot.on('message', async (msg) => {
 
     const pending = awaitingCreditCount.get(userId);
     const count = parseInt(msg.text.trim(), 10);
+    const MAX_CREDITS_PER_PURCHASE = 500;
 
     if (isNaN(count) || count < 1) {
       await bot.sendMessage(chatId,
         `⚠️ Please enter a valid number of credits \\(minimum 1\\)\\.`,
+        { parse_mode: 'MarkdownV2' }
+      );
+      return;
+    }
+
+    if (count > MAX_CREDITS_PER_PURCHASE) {
+      await bot.sendMessage(chatId,
+        `⚠️ Maximum *${escMd(String(MAX_CREDITS_PER_PURCHASE))}* credits per purchase\\. Please enter a smaller amount\\.`,
         { parse_mode: 'MarkdownV2' }
       );
       return;
@@ -869,6 +883,15 @@ bot.on('message', async (msg) => {
 
     const pending = awaitingLicenseKey.get(userId);
     const licenseKey = msg.text.trim();
+
+    // Basic format validation: must start with LIC- and have at least 6 chars after
+    if (!/^LIC-[A-Za-z0-9]{6,}$/i.test(licenseKey)) {
+      await bot.sendMessage(chatId,
+        `⚠️ Invalid license key format\\. License keys look like *LIC\\-XXXXXXXX*\\.\n\nPlease reply with your correct license key\\.`,
+        { parse_mode: 'MarkdownV2' }
+      );
+      return;
+    }
 
     awaitingLicenseKey.delete(userId);
 
