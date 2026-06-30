@@ -11,6 +11,12 @@ import (
 	"time"
 )
 
+const (
+	licenseKeyPrefix             = "LIC-"
+	licenseKeyHexBytes           = 8  // produces 16 hex chars after encoding
+	maxLicenseKeyGenAttempts     = 5
+)
+
 // botAPIRouter handles all /api/bot/* routes, authenticated via X-Bot-Key header.
 func botAPIRouter(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -242,11 +248,11 @@ func botAPIRouter(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		// Generate a unique license key, retrying up to 5 times on collision.
+		// Generate a unique license key, retrying up to maxLicenseKeyGenAttempts times on collision.
 		var newKey string
 		var licID int64
-		for attempt := 0; attempt < 5; attempt++ {
-			candidate := "LIC-" + strings.ToUpper(randomHex(8))
+		for attempt := 0; attempt < maxLicenseKeyGenAttempts; attempt++ {
+			candidate := licenseKeyPrefix + strings.ToUpper(randomHex(licenseKeyHexBytes))
 			id, createErr := dbCreateLicense(candidate, 0, nil, "auto-created via Telegram bot")
 			if createErr == nil {
 				newKey = candidate

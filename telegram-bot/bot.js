@@ -104,6 +104,15 @@ function fmtPHP(amount) {
   return '₱' + Number(amount).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
+// buildQrCodeUrl constructs a full URL from API_URL and a path like /image/qr/cashg.jpg.
+function buildQrCodeUrl(apiUrl, qrPath) {
+  if (!qrPath || !apiUrl) return null;
+  if (qrPath.startsWith('http://') || qrPath.startsWith('https://')) return qrPath;
+  const base = apiUrl.replace(/\/$/, '');
+  const p    = qrPath.startsWith('/') ? qrPath : '/' + qrPath;
+  return base + p;
+}
+
 async function apiGet(path) {
   const r = await axios.get(`${API_URL}${path}`, {
     headers: { 'X-Bot-Key': API_KEY },
@@ -716,7 +725,7 @@ bot.on('callback_query', async (query) => {
     if (licenseKey) {
       lines.push(``, `🔑 *Your license key:* \`${escMd(licenseKey)}\``);
       if (isNewLicense) {
-        lines.push(`_This key was created for you\\. Save it — it is your account identifier\\._`);
+        lines.push(`_This key was created for you\\. Keep it private and save it — it is your account identifier\\._`);
       }
     }
 
@@ -905,9 +914,7 @@ bot.on('message', async (msg) => {
         }
       }
       if (!qrSent && API_URL) {
-        const qrUrl = QR_CODE_PATH.startsWith('http')
-          ? QR_CODE_PATH
-          : `${API_URL}${QR_CODE_PATH.startsWith('/') ? '' : '/'}${QR_CODE_PATH}`;
+        const qrUrl = buildQrCodeUrl(API_URL, QR_CODE_PATH);
         try {
           await bot.sendPhoto(chatId, qrUrl, { caption, parse_mode: 'MarkdownV2' });
           qrSent = true;
