@@ -117,6 +117,7 @@ func broadcastToTelegramSubscribers(text string) {
 // escMdV2 escapes a plain string for use in a Telegram MarkdownV2 message.
 func escMdV2(s string) string {
 	replacer := strings.NewReplacer(
+		`\`, `\\`,
 		`_`, `\_`,
 		`*`, `\*`,
 		`[`, `\[`,
@@ -135,7 +136,6 @@ func escMdV2(s string) string {
 		`}`, `\}`,
 		`.`, `\.`,
 		`!`, `\!`,
-		`\`, `\\`,
 	)
 	return replacer.Replace(s)
 }
@@ -161,6 +161,6 @@ func sendPaymentReceipt(lic *License, recordLocator, passengerName, flightRoute,
 	}, "\n")
 
 	if err := sendTelegramMsg(lic.TelegramChatID, msg); err != nil {
-		logWarn(fmt.Sprintf("sendPaymentReceipt to chatID %s: %v", lic.TelegramChatID, err))
+		logWarn(fmt.Sprintf("sendPaymentReceipt to license %s (chatID %s): %v", lic.Key, lic.TelegramChatID, err))
 	}
 }

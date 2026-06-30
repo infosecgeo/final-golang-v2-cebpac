@@ -745,7 +745,6 @@ func dbListPurchaseRequests(status string) ([]PurchaseRequest, error) {
 // may only be linked to one TG user.
 func dbLinkTelegramToLicense(licenseKey, telegramUserID, chatID string) error {
 	// Check the TG user is not already linked to a different license.
-	existing := &License{}
 	var existID int64
 	err := db.QueryRow(
 		`SELECT id FROM licenses WHERE telegram_user_id = ? AND key != ?`,
@@ -757,7 +756,6 @@ func dbLinkTelegramToLicense(licenseKey, telegramUserID, chatID string) error {
 	if err != sql.ErrNoRows {
 		return err
 	}
-	_ = existing
 
 	// Check the license is not already linked to a different TG user.
 	var existTG string
