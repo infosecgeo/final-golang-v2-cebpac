@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	roleAdmin = "admin"
-	roleUser  = "user"
+	roleAdmin     = "admin"
+	roleUser      = "user"
+	roleBroadcast = "broadcast" // admin sub-role: maintenance and config access only
 )
 
 // jwtSecrets are loaded at startup. Use separate secrets for admin/user JWTs.
@@ -48,14 +49,15 @@ func randomHex(n int) string {
 
 type claims struct {
 	SessionID string `json:"sid"`
-	Role      string `json:"role"`
+	Role      string `json:"role"`      // "admin" or "user"
+	AdminRole string `json:"arole,omitempty"` // admin sub-role: "admin" or "broadcast"
 	Subject   string `json:"sub"` // username or license key
 	LicenseID int64  `json:"lid,omitempty"`
 	AdminID   int64  `json:"aid,omitempty"`
 	jwt.RegisteredClaims
 }
 
-func issueToken(role, subject string, licenseID, adminID int64) (string, string, error) {
+func issueToken(role, subject string, licenseID, adminID int64, adminRole string) (string, string, error) {
 	expHours := getConfigInt("jwt_expiry_hours", 24)
 	if role == roleAdmin {
 		expHours = getConfigInt("admin_jwt_expiry_hours", 8)
@@ -78,6 +80,7 @@ func issueToken(role, subject string, licenseID, adminID int64) (string, string,
 	c := claims{
 		SessionID: sessionID,
 		Role:      role,
+		AdminRole: adminRole,
 		Subject:   subject,
 		LicenseID: licenseID,
 		AdminID:   adminID,
@@ -190,7 +193,7 @@ func adminLoginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dbAdminClearFailed(admin.ID)
-	token, _, err := issueToken(roleAdmin, admin.Username, 0, admin.ID)
+	token, _, err := issueToken(roleAdmin, admin.Username, 0, admin.ID, admin.Role)
 	if err != nil {
 		logError("adminLogin issueToken: " + err.Error())
 		w.WriteHeader(http.StatusInternalServerError)
@@ -257,7 +260,7 @@ func userLoginHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, _, err := issueToken(roleUser, lic.Key, lic.ID, 0)
+	token, _, err := issueToken(roleUser, lic.Key, lic.ID, 0, "")
 	if err != nil {
 		logError("userLogin issueToken: " + err.Error())
 		w.WriteHeader(http.StatusInternalServerError)
@@ -310,22 +313,18 @@ func hashPasswordCheck(hash, password string) error {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 }
 
-// ensureDefaultAdmin creates the default admin if none exists.
+// ensureDefaultAdmin creates the default admin and broadcaster accounts if none exist.
 func ensureDefaultAdmin() {
-	rows, err := db.Query(`SELECT COUNT(*) FROM admins`)
-	if err != nil {
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM admins`).Scan(&count); err != nil {
 		logError("ensureDefaultAdmin count: " + err.Error())
 		return
-	}
-	defer rows.Close()
-	var count int
-	if rows.Next() {
-		rows.Scan(&count)
 	}
 	if count > 0 {
 		return
 	}
-	// Generate a random 16-byte password instead of using a predictable default.
+
+	// ── Superadmin ────────────────────────────────────────────────────────────
 	rawPw := make([]byte, 16)
 	if _, err := rand.Read(rawPw); err != nil {
 		logError("ensureDefaultAdmin rand: " + err.Error())
@@ -337,16 +336,37 @@ func ensureDefaultAdmin() {
 		logError("ensureDefaultAdmin hash: " + err.Error())
 		return
 	}
-	if err := dbCreateAdmin("admin", hash); err != nil {
-		logError("ensureDefaultAdmin create: " + err.Error())
+	if err := dbCreateAdmin("admin", hash, roleAdmin); err != nil {
+		logError("ensureDefaultAdmin create admin: " + err.Error())
 		return
 	}
-	// Print the one-time password to stdout so the operator can log in.
-	// Change it immediately via the Admin Dashboard after first login.
+
+	// ── Broadcaster admin (maintenance + config access only) ──────────────────
+	rawPw2 := make([]byte, 16)
+	if _, err := rand.Read(rawPw2); err != nil {
+		logError("ensureDefaultAdmin rand broadcaster: " + err.Error())
+		return
+	}
+	plainPw2 := hex.EncodeToString(rawPw2)
+	hash2, err := hashPassword(plainPw2)
+	if err != nil {
+		logError("ensureDefaultAdmin hash broadcaster: " + err.Error())
+		return
+	}
+	if err := dbCreateAdmin("broadcaster", hash2, roleBroadcast); err != nil {
+		logError("ensureDefaultAdmin create broadcaster: " + err.Error())
+		return
+	}
+
+	// Print one-time passwords to stdout so the operator can log in.
+	// Change them immediately via the Admin Dashboard after first login.
 	logWarn("┌─────────────────────────────────────────────────────┐")
-	logWarn("│  DEFAULT ADMIN ACCOUNT CREATED                      │")
-	logWarn("│  Username: admin                                     │")
+	logWarn("│  DEFAULT ADMIN ACCOUNTS CREATED                     │")
+	logWarn("│  Username: admin  (full access)                     │")
 	logWarn("│  Password: " + plainPw + "  │")
-	logWarn("│  CHANGE THIS IMMEDIATELY via the Admin Dashboard.   │")
+	logWarn("│                                                     │")
+	logWarn("│  Username: broadcaster  (maintenance + config only) │")
+	logWarn("│  Password: " + plainPw2 + "  │")
+	logWarn("│  CHANGE THESE IMMEDIATELY via the Admin Dashboard.  │")
 	logWarn("└─────────────────────────────────────────────────────┘")
 }
