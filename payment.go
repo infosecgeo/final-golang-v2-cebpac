@@ -23,7 +23,13 @@ import (
 	tls_client "github.com/bogdanfinn/tls-client"
 )
 
-const cellUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
+// getHPPUserAgent returns the configurable User-Agent used for HPP and payment requests.
+func getHPPUserAgent() string {
+	if ua := getConfig("hpp_user_agent"); ua != "" {
+		return ua
+	}
+	return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
+}
 
 // parseHPPForm extracts hidden input fields from HTML → url-encoded postfield.
 // The HTML may use single or double quotes for attribute values.
@@ -177,7 +183,7 @@ func doJSONPost(client *http.Client, u string, extra map[string]string, body str
 		return 0, "", nil, err
 	}
 	req.Header.Set("content-type", "application/json")
-	req.Header.Set("user-agent", cellUA)
+	req.Header.Set("user-agent", getHPPUserAgent())
 	req.Header.Set("accept", "*/*")
 	req.Header.Set("accept-language", "en-US,en;q=0.9")
 	for k, v := range extra {
@@ -198,7 +204,7 @@ func doFormPost(client *http.Client, u string, extra map[string]string, body str
 		return 0, "", nil, err
 	}
 	req.Header.Set("content-type", "application/x-www-form-urlencoded")
-	req.Header.Set("user-agent", cellUA)
+	req.Header.Set("user-agent", getHPPUserAgent())
 	req.Header.Set("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("accept-language", "en-US,en;q=0.9")
 	for k, v := range extra {
@@ -531,7 +537,7 @@ func processManualPayment(
 		map[string]interface{}{"name": "BrowserJavascriptEnabled", "text": true},
 		map[string]interface{}{"name": "BrowserColorDepth", "text": 24},
 		map[string]interface{}{"name": "BrowserTimeZoneOffset", "text": -480},
-		map[string]interface{}{"name": "UserAgent", "text": cellUA},
+		map[string]interface{}{"name": "UserAgent", "text": getHPPUserAgent()},
 		map[string]interface{}{"name": "BrowserScreenType", "text": "desktop"},
 		map[string]interface{}{"name": "BrowserOrientation", "text": "portrait"},
 	)
@@ -804,7 +810,7 @@ func processManualPayment(
 			strings.NewReader("TransactionId="+url.QueryEscape(txIDVal)+"&Response=&MD=null"),
 		)
 		cyberReq.Header.Set("content-type", "application/x-www-form-urlencoded")
-		cyberReq.Header.Set("user-agent", cellUA)
+		cyberReq.Header.Set("user-agent", getHPPUserAgent())
 		cyberReq.Header.Set("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
 		cyberReq.Header.Set("accept-language", "en-US,en;q=0.9")
 		cyberReq.Header.Set("origin", "https://centinelapi.cardinalcommerce.com")
