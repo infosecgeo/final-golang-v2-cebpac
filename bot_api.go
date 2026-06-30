@@ -114,14 +114,16 @@ func botAPIRouter(w http.ResponseWriter, r *http.Request) {
 
 	case path == "/purchase-requests" && r.Method == http.MethodPost:
 		var req struct {
-			TelegramUserID string  `json:"telegramUserId"`
-			Username       string  `json:"username"`
-			ChatID         string  `json:"chatId"`
-			PackageID      int64   `json:"packageId"`
-			PackageName    string  `json:"packageName"`
-			Credits        int     `json:"credits"`
-			AmountPHP      float64 `json:"amountPHP"`
-			LicenseKey     string  `json:"licenseKey"`
+			TelegramUserID  string  `json:"telegramUserId"`
+			Username        string  `json:"username"`
+			ChatID          string  `json:"chatId"`
+			PackageID       int64   `json:"packageId"`
+			PackageName     string  `json:"packageName"`
+			Credits         int     `json:"credits"`
+			AmountPHP       float64 `json:"amountPHP"`
+			LicenseKey      string  `json:"licenseKey"`
+			ReferenceNumber string  `json:"referenceNumber"`
+			RequestType     string  `json:"requestType"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSON(w, 400, map[string]string{"error": "invalid body"})
@@ -131,13 +133,17 @@ func botAPIRouter(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 400, map[string]string{"error": "telegramUserId, chatId, credits and amountPHP required"})
 			return
 		}
+		if req.RequestType == "" {
+			req.RequestType = "topup"
+		}
 		id, err := dbCreatePurchaseRequest(req.TelegramUserID, req.Username, req.ChatID,
-			req.PackageID, req.PackageName, req.Credits, req.AmountPHP, req.LicenseKey)
+			req.PackageID, req.PackageName, req.Credits, req.AmountPHP, req.LicenseKey,
+			req.ReferenceNumber, req.RequestType)
 		if err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
 		}
-		logSuccess(fmt.Sprintf("Purchase request created: id=%d user=%s credits=%d", id, req.TelegramUserID, req.Credits))
+		logSuccess(fmt.Sprintf("Purchase request created: id=%d user=%s credits=%d type=%s", id, req.TelegramUserID, req.Credits, req.RequestType))
 		writeJSON(w, 201, map[string]interface{}{"id": id})
 
 	case strings.HasPrefix(path, "/purchase-requests/") && strings.HasSuffix(path, "/status") && r.Method == http.MethodPut:
@@ -148,8 +154,9 @@ func botAPIRouter(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var req struct {
-			Status    string `json:"status"`
-			AdminNote string `json:"adminNote"`
+			Status     string `json:"status"`
+			AdminNote  string `json:"adminNote"`
+			ReviewedBy string `json:"reviewedBy"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSON(w, 400, map[string]string{"error": "invalid body"})
@@ -164,32 +171,99 @@ func botAPIRouter(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 404, map[string]string{"error": "not found"})
 			return
 		}
-		if err := dbUpdatePurchaseRequestStatus(id, req.Status, req.AdminNote); err != nil {
+		if err := dbUpdatePurchaseRequestStatus(id, req.Status, req.AdminNote, req.ReviewedBy); err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
 		}
-		// When approved and the request has a license key, automatically add credits.
+
 		creditAdded := false
-		if req.Status == "approved" && pr.LicenseKey != "" {
-			lic, lerr := dbGetLicenseByKey(pr.LicenseKey)
-			if lerr == nil && lic != nil {
-				if _, aerr := dbAdjustCredits(lic.ID, pr.Credits, fmt.Sprintf("purchase_approved:request_%d", id)); aerr != nil {
-					logWarn(fmt.Sprintf("Auto-credit add failed for request %d: %v", id, aerr))
+		newLicenseKey := ""
+
+		if req.Status == "approved" {
+			if pr.RequestType == "new_registration" && pr.LicenseKey == "" {
+				// Auto-generate a license key for a new registration.
+				var generatedKey string
+				var licID int64
+				for attempt := 0; attempt < maxLicenseKeyGenAttempts; attempt++ {
+					candidate := licenseKeyPrefix + strings.ToUpper(randomHex(licenseKeyHexBytes))
+					licID2, createErr := dbCreateLicense(candidate, 0, nil, fmt.Sprintf("auto-created on approval of request %d", id))
+					if createErr == nil {
+						generatedKey = candidate
+						licID = licID2
+						break
+					}
+					if !strings.Contains(createErr.Error(), "UNIQUE") {
+						writeJSON(w, 500, map[string]string{"error": "failed to create license: " + createErr.Error()})
+						return
+					}
+				}
+				if generatedKey == "" {
+					writeJSON(w, 500, map[string]string{"error": "failed to generate unique license key"})
+					return
+				}
+				// Link Telegram user to new license.
+				if err := dbLinkTelegramToLicense(generatedKey, pr.TelegramUserID, pr.ChatID); err != nil {
+					logWarn(fmt.Sprintf("Auto-link Telegram for request %d: %v", id, err))
+				}
+				// Assign credits.
+				if _, aerr := dbAdjustCredits(licID, pr.Credits, fmt.Sprintf("new_registration_approved:request_%d", id)); aerr != nil {
+					logWarn(fmt.Sprintf("Auto-credit add failed for new_registration request %d: %v", id, aerr))
 				} else {
 					creditAdded = true
-					logSuccess(fmt.Sprintf("Auto-added %d credits to license %s on approval of request %d", pr.Credits, pr.LicenseKey, id))
+				}
+				// Also upsert as subscriber.
+				_ = dbUpsertSubscriber(pr.TelegramUserID, pr.Username, pr.ChatID)
+				// Record the license key on the purchase request.
+				_ = dbUpdatePurchaseRequestLicenseKey(id, generatedKey)
+				newLicenseKey = generatedKey
+				logSuccess(fmt.Sprintf("Auto-created license %s for new_registration request %d (db id=%d)", generatedKey, id, licID))
+
+			} else if pr.LicenseKey != "" {
+				// Existing license — just add credits.
+				lic, lerr := dbGetLicenseByKey(pr.LicenseKey)
+				if lerr == nil && lic != nil {
+					if _, aerr := dbAdjustCredits(lic.ID, pr.Credits, fmt.Sprintf("purchase_approved:request_%d", id)); aerr != nil {
+						logWarn(fmt.Sprintf("Auto-credit add failed for request %d: %v", id, aerr))
+					} else {
+						creditAdded = true
+						logSuccess(fmt.Sprintf("Auto-added %d credits to license %s on approval of request %d", pr.Credits, pr.LicenseKey, id))
+					}
 				}
 			}
 		}
-		// Fetch updated record to return current state
+
+		// Fetch updated record to return current state.
 		updated, err := dbGetPurchaseRequest(id)
 		if err != nil || updated == nil {
 			updated = pr
 			updated.Status = req.Status
 			updated.AdminNote = req.AdminNote
+			updated.ReviewedBy = req.ReviewedBy
 		}
 		logSuccess(fmt.Sprintf("Purchase request %d marked %s", id, req.Status))
-		writeJSON(w, 200, map[string]interface{}{"ok": true, "request": updated, "creditAdded": creditAdded})
+		writeJSON(w, 200, map[string]interface{}{
+			"ok":            true,
+			"request":       updated,
+			"creditAdded":   creditAdded,
+			"newLicenseKey": newLicenseKey,
+		})
+
+	// ── Purchase requests by Telegram user (for user history) ─────────────────
+	case strings.HasPrefix(path, "/purchase-requests/by-telegram/") && r.Method == http.MethodGet:
+		tgUserID := strings.TrimPrefix(path, "/purchase-requests/by-telegram/")
+		if tgUserID == "" {
+			writeJSON(w, 400, map[string]string{"error": "telegramUserId required"})
+			return
+		}
+		list, err := dbListPurchaseRequestsByTelegramUserID(tgUserID, 10)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		if list == nil {
+			list = []PurchaseRequest{}
+		}
+		writeJSON(w, 200, list)
 
 	// ── Add credits via bot key (for /addcredits bot command) ─────────────────
 	case strings.HasPrefix(path, "/licenses/") && strings.HasSuffix(path, "/credits") && r.Method == http.MethodPost:
