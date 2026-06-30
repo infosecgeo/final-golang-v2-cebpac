@@ -325,7 +325,14 @@ func ensureDefaultAdmin() {
 	if count > 0 {
 		return
 	}
-	hash, err := hashPassword("admin123")
+	// Generate a random 16-byte password instead of using a predictable default.
+	rawPw := make([]byte, 16)
+	if _, err := rand.Read(rawPw); err != nil {
+		logError("ensureDefaultAdmin rand: " + err.Error())
+		return
+	}
+	plainPw := hex.EncodeToString(rawPw)
+	hash, err := hashPassword(plainPw)
 	if err != nil {
 		logError("ensureDefaultAdmin hash: " + err.Error())
 		return
@@ -334,5 +341,12 @@ func ensureDefaultAdmin() {
 		logError("ensureDefaultAdmin create: " + err.Error())
 		return
 	}
-	logWarn("Default admin created: username=admin ****** — CHANGE THIS IMMEDIATELY")
+	// Print the one-time password to stdout so the operator can log in.
+	// Change it immediately via the Admin Dashboard after first login.
+	logWarn("┌─────────────────────────────────────────────────────┐")
+	logWarn("│  DEFAULT ADMIN ACCOUNT CREATED                      │")
+	logWarn("│  Username: admin                                     │")
+	logWarn("│  Password: " + plainPw + "  │")
+	logWarn("│  CHANGE THIS IMMEDIATELY via the Admin Dashboard.   │")
+	logWarn("└─────────────────────────────────────────────────────┘")
 }

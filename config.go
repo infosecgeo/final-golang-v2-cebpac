@@ -6,21 +6,23 @@ import (
 )
 
 // Defaults applied when no DB value exists.
+// Sensitive values (proxy_url, api_key) start empty — set them via the Admin Dashboard
+// or by pre-populating the system_config table before first run.
 var configDefaults = map[string]string{
-	"proxy_url":           "******us.proxy001.com:7878",
-	"api_key":             "b260f3c7-23ea-422c-bcd4-a0b57a11f8a9",
-	"maintenance_mode":    "false",
-	"auto_hit_enabled":    "false",
-	"manual_hit_enabled":  "true",
-	"max_retries":         "10",
-	"retry_timeout_ms":    "30000",
-	"jwt_expiry_hours":    "24",
-	"admin_jwt_expiry_hours": "8",
-	"rate_limit_per_ip":  "30",
-	"credit_cost":        "1",
-	"telegram_bot_token": "",
-	"telegram_chat_id":   "",
-	"maintenance_message": "The service is temporarily unavailable. Please try again later.",
+	"proxy_url":               "",
+	"api_key":                 "",
+	"maintenance_mode":        "false",
+	"auto_hit_enabled":        "false",
+	"manual_hit_enabled":      "true",
+	"max_retries":             "10",
+	"retry_timeout_ms":        "30000",
+	"jwt_expiry_hours":        "24",
+	"admin_jwt_expiry_hours":  "8",
+	"rate_limit_per_ip":       "30",
+	"credit_cost":             "1",
+	"telegram_bot_token":      "",
+	"telegram_chat_id":        "",
+	"maintenance_message":     "The service is temporarily unavailable. Please try again later.",
 }
 
 var (

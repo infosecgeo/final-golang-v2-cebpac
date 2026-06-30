@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"html"
 	"net/http"
 	"strings"
 	"sync"
@@ -76,14 +77,18 @@ func maintenanceMiddleware(next http.Handler) http.Handler {
 				})
 				return
 			}
-			// HTML maintenance page
+			// HTML maintenance page — msg is HTML-escaped before embedding
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte(`<!DOCTYPE html><html><head><title>Maintenance</title>
-<style>body{background:#0f1117;color:#e2e4f0;font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
-.box{text-align:center;padding:40px;background:#1a1d27;border:1px solid #2e3247;border-radius:12px;max-width:400px}
-h1{color:#ef4444;margin-bottom:16px}p{color:#6b7394}</style></head>
-<body><div class="box"><h1>🔧 System Maintenance</h1><p>` + msg + `</p></div></body></html>`))
+			safeMsgBytes := []byte(html.EscapeString(msg))
+			page := []byte(`<!DOCTYPE html><html><head><title>Maintenance</title>` +
+				`<style>body{background:#0f1117;color:#e2e4f0;font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}` +
+				`.box{text-align:center;padding:40px;background:#1a1d27;border:1px solid #2e3247;border-radius:12px;max-width:400px}` +
+				`h1{color:#ef4444;margin-bottom:16px}p{color:#6b7394}</style></head>` +
+				`<body><div class="box"><h1>&#x1F527; System Maintenance</h1><p>`)
+			page = append(page, safeMsgBytes...)
+			page = append(page, []byte(`</p></div></body></html>`)...)
+			w.Write(page)
 			return
 		}
 		next.ServeHTTP(w, r)
