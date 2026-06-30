@@ -449,7 +449,7 @@ func makeHPPPost(client tls_client.HttpClient, xAuthToken, bearerToken, hppConte
 		"authorization":      {"Bearer " + bearerToken},
 		"sec-ch-ua":          {`"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"`},
 		"sec-ch-ua-mobile":   {"?0"},
-		"user-agent":         {"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) Gecko/20100101 Firefox/152.0"},
+		"user-agent":         {getHPPUserAgent()},
 		"accept":             {"application/json, text/plain, */*"},
 		"content-type":       {"application/json"},
 		"origin":             {baseURL},

@@ -17,7 +17,10 @@ func botAPIRouter(w http.ResponseWriter, r *http.Request) {
 
 	// Validate X-Bot-Key
 	key := r.Header.Get("X-Bot-Key")
-	expected := getConfig("api_key")
+	expected := getConfig("bot_api_key")
+	if expected == "" {
+		expected = getConfig("api_key")
+	}
 	if expected == "" || key != expected {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 		return

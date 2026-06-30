@@ -31,7 +31,7 @@ func fetchItinerary(xAuthToken, bearerToken string) (*ItineraryData, error) {
 	req.Header.Set("Referer", "https://www.cebupacificair.com")
 	req.Header.Set("Origin", "https://www.cebupacificair.com")
 	req.Header.Set("Accept", "application/json, text/plain, */*")
-	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("User-Agent", getHPPUserAgent())
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 
 	stdCl := newStdClient()
@@ -46,7 +46,9 @@ func fetchItinerary(xAuthToken, bearerToken string) (*ItineraryData, error) {
 		return nil, fmt.Errorf("read itinerary body: %w", err)
 	}
 
-	logInfo(fmt.Sprintf("[*] Itinerary fetched successfully. Status: %d", resp.StatusCode))
+	if resp.StatusCode == 200 {
+		logInfo(fmt.Sprintf("[*] Itinerary fetched successfully. Status: %d", resp.StatusCode))
+	}
 
 	var raw map[string]interface{}
 	if err := json.Unmarshal(body, &raw); err != nil {
