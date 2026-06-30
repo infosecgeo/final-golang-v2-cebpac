@@ -72,16 +72,19 @@ const LICENSE_KEY_REGEX         = /^LIC-[A-Za-z0-9]{6,}$/i;
 
 // ── In-memory conversation state ───────────────────────────────────────────────
 
-// userId → { pricePerCredit }  (user accepted T&C, waiting to enter credit count)
+// userId → { pricePerCredit, requestType ('new_registration'|'topup'), licenseKey }
 const awaitingCreditCount = new Map();
 
-// userId → { credits, amountPHP }  (waiting for license key after credit count entered)
-const awaitingLicenseKey = new Map();
-
-// userId → { credits, amountPHP, licenseKey }  (waiting for proof-of-payment photo)
+// userId → { credits, amountPHP, requestType, licenseKey }
 const awaitingReceipt = new Map();
 
-// requestId (number) → { chatId, userId, credits, amountPHP, licenseKey, username }
+// userId → { credits, amountPHP, requestType, licenseKey, fileId, isPhoto }
+const awaitingReferenceNumber = new Map();
+
+// userId (in Set) — waiting for existing license key input
+const awaitingExistingLicense = new Set();
+
+// requestId (number) → { chatId, userId, credits, amountPHP, licenseKey, username, requestType }
 const pendingApprovals = new Map();
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -174,6 +177,209 @@ function buildTCMessage() {
     ``,
     `Do you agree to these Terms \\& Conditions?`,
   ].join('\n');
+}
+
+// sendDashboard fetches the user's linked license and shows their dashboard.
+async function sendDashboard(chatId, userId, username) {
+  let lic = null;
+  try {
+    const data = await apiGet(`/api/bot/licenses/check-telegram/${encodeURIComponent(userId)}`);
+    if (data && data.registered) {
+      lic = data;
+    }
+  } catch (e) {
+    console.warn('[WARN] sendDashboard fetch license:', e.message);
+  }
+
+  if (!lic) {
+    await bot.sendMessage(chatId,
+      `⚠️ No linked license found\\. Use /start to register\\.`,
+      { parse_mode: 'MarkdownV2' }
+    );
+    return;
+  }
+
+  const text = [
+    `✈️ *AnasFlightsV2 — Dashboard*`,
+    ``,
+    `👤 Welcome back, ${escMd(username || 'User')}\\!`,
+    `🔑 License: \`${escMd(lic.licenseKey)}\``,
+    `💰 Credits: *${escMd(String(lic.credits))}*`,
+    ``,
+    `What would you like to do?`,
+  ].join('\n');
+
+  await bot.sendMessage(chatId, text, {
+    parse_mode: 'MarkdownV2',
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '💰 Check Balance',       callback_data: 'check_balance' },
+          { text: '📋 Transaction History', callback_data: 'view_history' },
+        ],
+        [
+          { text: '➕ Top-up Credits',      callback_data: 'topup_credits' },
+          { text: '🔄 Refresh',             callback_data: 'refresh_account' },
+        ],
+      ],
+    },
+  });
+}
+
+// sendQRAndAskReceipt sends the QR code and moves the user to the receipt phase.
+async function sendQRAndAskReceipt(chatId, userId, count, amountPHP, requestType, licenseKey) {
+  const captionLines = [
+    `🎟 *Credits requested: ${escMd(String(count))}*`,
+    `💰 *Total to pay: ${escMd(fmtPHP(amountPHP))}*`,
+    ``,
+    `📱 *Scan the QR code below* to make your GCash/bank payment\\.`,
+    ``,
+    `⚠️ *IMPORTANT:*`,
+    `• Pay the *exact amount* shown above`,
+    `• Credits are *NON\\-REFUNDABLE* once confirmed`,
+    ``,
+    `After paying, send us a *photo* of your payment receipt\\.`,
+  ];
+  const caption = captionLines.join('\n');
+
+  // Send QR code image: try filesystem path first, then URL, then text fallback.
+  let qrSent = false;
+  if (QR_CODE_PATH) {
+    if (fs.existsSync(QR_CODE_PATH)) {
+      try {
+        await bot.sendPhoto(chatId, fs.createReadStream(QR_CODE_PATH), { caption, parse_mode: 'MarkdownV2' });
+        qrSent = true;
+      } catch (e) {
+        console.error('[ERROR] sendPhoto (file) failed:', e.message);
+      }
+    }
+    if (!qrSent && API_URL) {
+      const qrUrl = buildQrCodeUrl(API_URL, QR_CODE_PATH);
+      try {
+        await bot.sendPhoto(chatId, qrUrl, { caption, parse_mode: 'MarkdownV2' });
+        qrSent = true;
+      } catch (e) {
+        console.error('[ERROR] sendPhoto (url) failed:', e.message);
+      }
+    }
+  }
+  if (!qrSent) {
+    await bot.sendMessage(chatId, caption, { parse_mode: 'MarkdownV2' });
+  }
+
+  awaitingReceipt.set(userId, { credits: count, amountPHP, requestType, licenseKey: licenseKey || '' });
+  await bot.sendMessage(chatId,
+    `📸 Please *send a photo* of your payment receipt as proof of payment\\.`,
+    { parse_mode: 'MarkdownV2', reply_markup: { force_reply: true, input_field_placeholder: 'Send photo here' } }
+  );
+}
+
+// submitPurchaseRequest creates the request in the backend and forwards to admin group.
+async function submitPurchaseRequest(chatId, userId, username, pending) {
+  const { credits, amountPHP, requestType, licenseKey, fileId, isPhoto, referenceNumber } = pending;
+
+  let requestId;
+  try {
+    const result = await apiPost('/api/bot/purchase-requests', {
+      telegramUserId: userId,
+      username,
+      chatId: String(chatId),
+      packageId: CUSTOM_PACKAGE_ID,
+      packageName: CUSTOM_PACKAGE_NAME,
+      credits,
+      amountPHP,
+      licenseKey: licenseKey || '',
+      referenceNumber: referenceNumber || '',
+      requestType: requestType || 'topup',
+    });
+    requestId = result.id;
+  } catch (e) {
+    await bot.sendMessage(chatId,
+      `❌ Failed to submit your request: ${escMd(e.message)}\\. Please try again with /help\\.`,
+      { parse_mode: 'MarkdownV2' }
+    );
+    return;
+  }
+
+  // Confirm to user
+  const confirmLines = [
+    `✅ *Purchase Request Submitted\\!*`,
+    ``,
+    `🎟 Credits: *${escMd(String(credits))}*`,
+    `💰 Amount: *${escMd(fmtPHP(amountPHP))}*`,
+    `📋 Request ID: \`${escMd(String(requestId))}\``,
+  ];
+  if (requestType === 'topup' && licenseKey) {
+    confirmLines.push(`🔑 License: \`${escMd(licenseKey)}\``);
+  }
+  if (referenceNumber) {
+    confirmLines.push(`📝 Ref \\#: ${escMd(referenceNumber)}`);
+  }
+  confirmLines.push(
+    ``,
+    `Your payment proof has been forwarded to our team for review\\.`,
+    `You will be notified once it is approved or denied\\.`,
+    ``,
+    `⚠️ Reminder: Credits are *NON\\-REFUNDABLE* once confirmed\\.`
+  );
+  await bot.sendMessage(chatId, confirmLines.join('\n'), { parse_mode: 'MarkdownV2' });
+
+  // Forward receipt to payment group with approve/deny buttons
+  if (PAYMENT_GROUP_ID && fileId) {
+    const licDisplay = (requestType === 'new_registration')
+      ? `New Registration`
+      : (licenseKey || 'N/A');
+
+    const groupCaption = [
+      `💳 *New Purchase Request \\#${escMd(String(requestId))}*`,
+      ``,
+      `👤 User: @${escMd(username || String(userId))} \\(ID: \`${escMd(userId)}\`\\)`,
+      `🎟 Credits: *${escMd(String(credits))}*`,
+      `💰 Amount due: *${escMd(fmtPHP(amountPHP))}*`,
+      `🔑 License: \`${escMd(licDisplay)}\``,
+      referenceNumber ? `📝 Ref \\#: ${escMd(referenceNumber)}` : null,
+      `📌 Type: ${escMd(requestType === 'new_registration' ? 'New Registration' : 'Top\\-up')}`,
+      `🕐 Time: ${escMd(fmtDate(new Date().toISOString()))}`,
+      ``,
+      `✅ Approve if payment amount matches\\. ❌ Deny if it does not\\.`,
+    ].filter(Boolean).join('\n');
+
+    const approvalKeyboard = {
+      inline_keyboard: [[
+        { text: '✅ Approve', callback_data: `approve:${requestId}` },
+        { text: '❌ Deny',    callback_data: `deny:${requestId}` },
+      ]],
+    };
+
+    try {
+      if (isPhoto) {
+        await bot.sendPhoto(PAYMENT_GROUP_ID, fileId, {
+          caption: groupCaption,
+          parse_mode: 'MarkdownV2',
+          reply_markup: approvalKeyboard,
+        });
+      } else {
+        await bot.sendDocument(PAYMENT_GROUP_ID, fileId, {
+          caption: groupCaption,
+          parse_mode: 'MarkdownV2',
+          reply_markup: approvalKeyboard,
+        });
+      }
+
+      // Track for approve/deny callback
+      pendingApprovals.set(requestId, {
+        chatId:      String(chatId),
+        userId,
+        credits,
+        amountPHP,
+        licenseKey:  licenseKey || '',
+        username:    username || '',
+        requestType: requestType || 'topup',
+      });
+    } catch (e) {
+      console.error('[ERROR] Forward to payment group failed:', e.message);
+    }
+  }
 }
 
 // ── Webhook receiver (for push events from Go backend) ─────────────────────────
@@ -341,9 +547,9 @@ async function broadcastToSubscribers(markdownText) {
 // ── Bot Commands ───────────────────────────────────────────────────────────────
 
 bot.setMyCommands([
-  { command: 'start',      description: 'Welcome & registration info' },
-  { command: 'register',   description: 'Link your Telegram account to a license key' },
+  { command: 'start',      description: 'Welcome & registration' },
   { command: 'help',       description: 'Help & buy credits' },
+  { command: 'register',   description: 'Link your Telegram account to a license key' },
   { command: 'admin_help', description: 'Admin commands (authorized users only)' },
 ]);
 
@@ -351,30 +557,47 @@ bot.setMyCommands([
 
 bot.onText(/\/start/, async (msg) => {
   await registerSubscriber(msg);
+  const chatId   = msg.chat.id;
+  const userId   = String(msg.from.id);
+  const username = msg.from.username || msg.from.first_name || '';
+
+  // Check if user already has a linked license
+  try {
+    const data = await apiGet(`/api/bot/licenses/check-telegram/${encodeURIComponent(userId)}`);
+    if (data && data.registered) {
+      await sendDashboard(chatId, userId, username);
+      return;
+    }
+  } catch (e) {
+    console.warn('[WARN] /start check-telegram:', e.message);
+  }
+
+  // New visitor — show welcome with New User / Existing User options
   const text = [
     `✈️ *Welcome to AnasFlightsV2\\!*`,
     ``,
     `We provide automated flight booking assistance powered by credits\\.`,
     ``,
-    buildTCMessage(),
+    `Are you a new or existing user?`,
   ].join('\n');
-  await bot.sendMessage(msg.chat.id, text, {
+
+  await bot.sendMessage(chatId, text, {
     parse_mode: 'MarkdownV2',
     reply_markup: {
       inline_keyboard: [[
-        { text: '✅ I Accept', callback_data: 'tc_accept_start' },
-        { text: '❌ I Decline', callback_data: 'tc_deny' },
+        { text: '🆕 New User',      callback_data: 'user_new' },
+        { text: '👤 Existing User', callback_data: 'user_existing' },
       ]],
     },
   });
 });
 
-// ── /register ──────────────────────────────────────────────────────────────────
+// ── /register (manual license linking) ────────────────────────────────────────
 
 bot.onText(/\/register(?:\s+(.+))?/, async (msg, match) => {
   await registerSubscriber(msg);
-  const chatId  = msg.chat.id;
-  const userId  = String(msg.from.id);
+  const chatId   = msg.chat.id;
+  const userId   = String(msg.from.id);
   const username = msg.from.username || msg.from.first_name || '';
   const licenseKey = (match[1] || '').trim();
 
@@ -401,18 +624,7 @@ bot.onText(/\/register(?:\s+(.+))?/, async (msg, match) => {
       chatId: String(chatId),
       username,
     });
-    await bot.sendMessage(chatId,
-      [
-        `✅ *Registration Successful\\!*`,
-        ``,
-        `🔑 License \`${escMd(licenseKey)}\` is now linked to your Telegram account\\.`,
-        ``,
-        `You will receive booking receipts and notifications here automatically\\.`,
-        ``,
-        `Use /help to buy credits and start booking\\.`,
-      ].join('\n'),
-      { parse_mode: 'MarkdownV2' }
-    );
+    await sendDashboard(chatId, userId, username);
   } catch (e) {
     const errMsg = e.response && e.response.data && e.response.data.error
       ? e.response.data.error
@@ -424,10 +636,25 @@ bot.onText(/\/register(?:\s+(.+))?/, async (msg, match) => {
   }
 });
 
-
+// ── /help ──────────────────────────────────────────────────────────────────────
 
 bot.onText(/\/help/, async (msg) => {
   await registerSubscriber(msg);
+  const chatId   = msg.chat.id;
+  const userId   = String(msg.from.id);
+  const username = msg.from.username || msg.from.first_name || '';
+
+  // If user has a linked license, show dashboard instead
+  try {
+    const data = await apiGet(`/api/bot/licenses/check-telegram/${encodeURIComponent(userId)}`);
+    if (data && data.registered) {
+      await sendDashboard(chatId, userId, username);
+      return;
+    }
+  } catch (e) {
+    console.warn('[WARN] /help check-telegram:', e.message);
+  }
+
   const text = [
     `✈️ *AnasFlightsV2 — Help*`,
     ``,
@@ -436,23 +663,11 @@ bot.onText(/\/help/, async (msg) => {
     `• Credits are consumed per successful booking transaction`,
     `• Service availability may be interrupted for maintenance`,
     ``,
-    `💳 *Buy Credits*`,
-    `Choose how many credits to purchase\\. A QR code for payment will be shown\\.`,
-    `After paying, send your proof of payment to complete the request\\.`,
-    ``,
-    `/start \\— Welcome \\& registration info`,
-    `/register \\<LIC\\-KEY\\> \\— Link your license to receive receipts here`,
-    `/help \\— This message`,
+    `Use /start to register or link your account\\.`,
+    `/register \\<LIC\\-KEY\\> \\— Link your license directly`,
   ].join('\n');
 
-  await bot.sendMessage(msg.chat.id, text, {
-    parse_mode: 'MarkdownV2',
-    reply_markup: {
-      inline_keyboard: [[
-        { text: '🛒 Buy Credits', callback_data: 'buy_credits' },
-      ]],
-    },
-  });
+  await bot.sendMessage(msg.chat.id, text, { parse_mode: 'MarkdownV2' });
 });
 
 // ── /admin_help ────────────────────────────────────────────────────────────────
@@ -635,7 +850,7 @@ bot.onText(/\/broadcast_prices/, async (msg) => {
       ``,
       `🎟 *Price per credit: ${escMd(fmtPHP(price))}*`,
       ``,
-      `You choose how many credits to purchase\\. Tap /help to buy\\.`,
+      `You choose how many credits to purchase\\. Use /start to register or buy credits\\.`,
     ];
     await broadcastToSubscribers(lines.join('\n'));
     await bot.sendMessage(msg.chat.id, '✅ Prices broadcast to all subscribers\\.', { parse_mode: 'MarkdownV2' });
@@ -647,18 +862,19 @@ bot.onText(/\/broadcast_prices/, async (msg) => {
 // ── Inline keyboard callback handler ──────────────────────────────────────────
 
 bot.on('callback_query', async (query) => {
-  const chatId  = query.message.chat.id;
-  const userId  = String(query.from.id);
-  const data    = query.data || '';
+  const chatId   = query.message.chat.id;
+  const userId   = String(query.from.id);
+  const username = query.from.username || query.from.first_name || '';
+  const data     = query.data || '';
 
-  // ── Buy Credits — show T&C first ──────────────────────────────────────────
-  if (data === 'buy_credits') {
+  // ── New User → show Terms & Conditions ───────────────────────────────────
+  if (data === 'user_new') {
     await bot.answerCallbackQuery(query.id);
     await bot.sendMessage(chatId, buildTCMessage(), {
       parse_mode: 'MarkdownV2',
       reply_markup: {
         inline_keyboard: [[
-          { text: '✅ I Accept', callback_data: 'tc_accept' },
+          { text: '✅ I Accept', callback_data: 'tc_accept_new' },
           { text: '❌ I Decline', callback_data: 'tc_deny' },
         ]],
       },
@@ -666,29 +882,25 @@ bot.on('callback_query', async (query) => {
     return;
   }
 
-  // ── T&C accepted from /start welcome ──────────────────────────────────────
-  if (data === 'tc_accept_start') {
+  // ── Existing User → ask for license key ──────────────────────────────────
+  if (data === 'user_existing') {
     await bot.answerCallbackQuery(query.id);
+    awaitingExistingLicense.add(userId);
     await bot.sendMessage(chatId,
       [
-        `✅ *Terms \\& Conditions Accepted\\!*`,
+        `🔑 *Existing User Login*`,
         ``,
-        `To get started:`,
+        `Please enter your license key to link your Telegram account\\.`,
         ``,
-        `1️⃣ Register your license key:`,
-        `   /register LIC\\-XXXXXXXX`,
-        ``,
-        `2️⃣ Then use /help to buy credits\\.`,
-        ``,
-        `_If you don't have a license key yet, please contact the admin\\._`,
+        `_Format: LIC\\-XXXXXXXXXXXXXXXX_`,
       ].join('\n'),
-      { parse_mode: 'MarkdownV2' }
+      { parse_mode: 'MarkdownV2', reply_markup: { force_reply: true, input_field_placeholder: 'LIC-XXXXXXXXXXXXXXXX' } }
     );
     return;
   }
 
-  // ── T&C accepted — proceed to credit count ────────────────────────────────
-  if (data === 'tc_accept') {
+  // ── T&C accepted — New Registration ──────────────────────────────────────
+  if (data === 'tc_accept_new') {
     await bot.answerCallbackQuery(query.id);
     let pricePerCredit = DEFAULT_CREDIT_PRICE_PHP;
     try {
@@ -698,46 +910,60 @@ bot.on('callback_query', async (query) => {
       console.warn('[WARN] Failed to fetch credit price:', e.message);
     }
 
-    // Auto-create or retrieve the user's license key so they don't need to enter it manually.
-    let licenseKey = null;
-    let isNewLicense = false;
-    try {
-      const licResult = await apiPost('/api/bot/licenses/auto-create', {
-        telegramUserId: userId,
-        chatId: String(chatId),
-        username: msg.from.username || msg.from.first_name || '',
-      });
-      licenseKey = licResult.licenseKey || null;
-      isNewLicense = licResult.isNew === true;
-    } catch (e) {
-      console.warn('[WARN] Failed to auto-create license:', e.message);
-    }
+    awaitingCreditCount.set(userId, { pricePerCredit, requestType: 'new_registration', licenseKey: null });
 
-    // Store state including the resolved license key.
-    awaitingCreditCount.set(userId, { pricePerCredit, licenseKey });
-
-    const lines = [
-      `✅ *Terms \\& Conditions Accepted\\!*`,
-      ``,
-      `💰 *Price per credit: ${escMd(fmtPHP(pricePerCredit))}*`,
-    ];
-
-    if (licenseKey) {
-      lines.push(``, `🔑 *Your license key:* \`${escMd(licenseKey)}\``);
-      if (isNewLicense) {
-        lines.push(`_This key was created for you\\. Keep it private and save it — it is your account identifier\\._`);
-      }
-    }
-
-    lines.push(
-      ``,
-      `How many credits would you like to purchase?`,
-      `_Minimum: 1 credit_`,
-      ``,
-      `Please reply with a number \\(e\\.g\\. 5\\)\\.`
+    await bot.sendMessage(chatId,
+      [
+        `✅ *Terms \\& Conditions Accepted\\!*`,
+        ``,
+        `💰 *Price per credit: ${escMd(fmtPHP(pricePerCredit))}*`,
+        ``,
+        `How many credits would you like to purchase?`,
+        `_Minimum: 1 credit \\| Maximum: ${escMd(String(MAX_CREDITS_PER_PURCHASE))} credits_`,
+        ``,
+        `Please reply with a number \\(e\\.g\\. 5\\)\\.`,
+      ].join('\n'),
+      { parse_mode: 'MarkdownV2', reply_markup: { force_reply: true, input_field_placeholder: 'e.g. 5' } }
     );
+    return;
+  }
 
-    await bot.sendMessage(chatId, lines.join('\n'),
+  // ── T&C accepted — Top-up (existing user) ────────────────────────────────
+  if (data === 'tc_accept_topup') {
+    await bot.answerCallbackQuery(query.id);
+    let pricePerCredit = DEFAULT_CREDIT_PRICE_PHP;
+    try {
+      const priceData = await apiGet('/api/bot/credit-price');
+      pricePerCredit = priceData.pricePerCredit || DEFAULT_CREDIT_PRICE_PHP;
+    } catch (e) {
+      console.warn('[WARN] Failed to fetch credit price:', e.message);
+    }
+
+    // Fetch the user's linked license key
+    let licenseKey = null;
+    try {
+      const licData = await apiGet(`/api/bot/licenses/check-telegram/${encodeURIComponent(userId)}`);
+      if (licData && licData.registered) {
+        licenseKey = licData.licenseKey || null;
+      }
+    } catch (e) {
+      console.warn('[WARN] tc_accept_topup fetch license:', e.message);
+    }
+
+    awaitingCreditCount.set(userId, { pricePerCredit, requestType: 'topup', licenseKey });
+
+    await bot.sendMessage(chatId,
+      [
+        `✅ *Terms \\& Conditions Accepted\\!*`,
+        ``,
+        `💰 *Price per credit: ${escMd(fmtPHP(pricePerCredit))}*`,
+        licenseKey ? `🔑 *License:* \`${escMd(licenseKey)}\`` : null,
+        ``,
+        `How many credits would you like to top up?`,
+        `_Minimum: 1 credit \\| Maximum: ${escMd(String(MAX_CREDITS_PER_PURCHASE))} credits_`,
+        ``,
+        `Please reply with a number \\(e\\.g\\. 5\\)\\.`,
+      ].filter(Boolean).join('\n'),
       { parse_mode: 'MarkdownV2', reply_markup: { force_reply: true, input_field_placeholder: 'e.g. 5' } }
     );
     return;
@@ -752,20 +978,81 @@ bot.on('callback_query', async (query) => {
         ``,
         `You cannot proceed without accepting the Terms \\& Conditions\\.`,
         ``,
-        `Use /help if you change your mind\\.`,
+        `Use /start if you change your mind\\.`,
       ].join('\n'),
       { parse_mode: 'MarkdownV2' }
     );
     return;
   }
 
-  // ── Back to help ───────────────────────────────────────────────────────────
-  if (data === 'back_help') {
+  // ── Dashboard — Check Balance ─────────────────────────────────────────────
+  if (data === 'check_balance') {
     await bot.answerCallbackQuery(query.id);
-    await bot.sendMessage(chatId,
-      `✈️ *AnasFlightsV2 — Help*\n\nUse /help to see available commands and buy credits\\.`,
-      { parse_mode: 'MarkdownV2' }
-    );
+    try {
+      const licData = await apiGet(`/api/bot/licenses/check-telegram/${encodeURIComponent(userId)}`);
+      if (licData && licData.registered) {
+        await bot.sendMessage(chatId,
+          [
+            `💰 *Your Credit Balance*`,
+            ``,
+            `🔑 License: \`${escMd(licData.licenseKey)}\``,
+            `💳 Credits available: *${escMd(String(licData.credits))}*`,
+          ].join('\n'),
+          { parse_mode: 'MarkdownV2' }
+        );
+      } else {
+        await bot.sendMessage(chatId, `⚠️ No linked license found\\.`, { parse_mode: 'MarkdownV2' });
+      }
+    } catch (e) {
+      await bot.sendMessage(chatId, `❌ Error: ${escMd(e.message)}`, { parse_mode: 'MarkdownV2' });
+    }
+    return;
+  }
+
+  // ── Dashboard — Transaction History ──────────────────────────────────────
+  if (data === 'view_history') {
+    await bot.answerCallbackQuery(query.id);
+    try {
+      const history = await apiGet(`/api/bot/purchase-requests/by-telegram/${encodeURIComponent(userId)}`);
+      if (!Array.isArray(history) || history.length === 0) {
+        await bot.sendMessage(chatId, `📋 No transaction history found\\.`, { parse_mode: 'MarkdownV2' });
+        return;
+      }
+      const lines = [`📋 *Transaction History* \\(last ${escMd(String(history.length))}\\)`, ``];
+      for (const tx of history) {
+        const statusIcon = tx.status === 'approved' ? '✅' : tx.status === 'denied' ? '❌' : '⏳';
+        lines.push(
+          `${statusIcon} *\\#${escMd(String(tx.id))}* — ${escMd(String(tx.credits))} credits \\(${escMd(fmtPHP(tx.amountPHP))}\\)`,
+          `   ${escMd(fmtDate(tx.createdAt))} — ${escMd(tx.status)}`,
+          ``
+        );
+      }
+      await bot.sendMessage(chatId, lines.join('\n'), { parse_mode: 'MarkdownV2' });
+    } catch (e) {
+      await bot.sendMessage(chatId, `❌ Error: ${escMd(e.message)}`, { parse_mode: 'MarkdownV2' });
+    }
+    return;
+  }
+
+  // ── Dashboard — Top-up Credits ────────────────────────────────────────────
+  if (data === 'topup_credits') {
+    await bot.answerCallbackQuery(query.id);
+    await bot.sendMessage(chatId, buildTCMessage(), {
+      parse_mode: 'MarkdownV2',
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '✅ I Accept', callback_data: 'tc_accept_topup' },
+          { text: '❌ I Decline', callback_data: 'tc_deny' },
+        ]],
+      },
+    });
+    return;
+  }
+
+  // ── Dashboard — Refresh ───────────────────────────────────────────────────
+  if (data === 'refresh_account') {
+    await bot.answerCallbackQuery(query.id, { text: 'Refreshing...' });
+    await sendDashboard(chatId, userId, username);
     return;
   }
 
@@ -779,12 +1066,13 @@ bot.on('callback_query', async (query) => {
     const reqIdNum = parseInt(requestId, 10);
     const pendingInfo = pendingApprovals.get(reqIdNum);
 
-    const status = action === 'approve' ? 'approved' : 'denied';
-    const adminNote = `Action by admin @${query.from.username || query.from.id} on ${fmtDate(new Date().toISOString())}`;
+    const status     = action === 'approve' ? 'approved' : 'denied';
+    const reviewedBy = `@${query.from.username || String(query.from.id)}`;
+    const adminNote  = `Action by ${reviewedBy} on ${fmtDate(new Date().toISOString())}`;
 
     let apiResult;
     try {
-      apiResult = await apiPut(`/api/bot/purchase-requests/${reqIdNum}/status`, { status, adminNote });
+      apiResult = await apiPut(`/api/bot/purchase-requests/${reqIdNum}/status`, { status, adminNote, reviewedBy });
     } catch (e) {
       await bot.answerCallbackQuery(query.id, { text: `❌ Failed to update: ${e.message}`, show_alert: true });
       return;
@@ -792,7 +1080,7 @@ bot.on('callback_query', async (query) => {
 
     await bot.answerCallbackQuery(query.id, { text: status === 'approved' ? '✅ Approved!' : '❌ Denied!' });
 
-    // Edit the group message to show outcome
+    // Edit the group message to remove action buttons
     try {
       await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
         chat_id: query.message.chat.id,
@@ -800,46 +1088,90 @@ bot.on('callback_query', async (query) => {
       });
     } catch (_) {}
 
-    // Notify user — use in-memory state or fall back to DB response data
+    // Determine request info for user notification
     const info = pendingInfo || (apiResult && apiResult.request ? {
-      chatId:     apiResult.request.chatId,
-      credits:    apiResult.request.credits,
-      amountPHP:  apiResult.request.amountPHP,
-      licenseKey: apiResult.request.licenseKey,
+      chatId:      apiResult.request.chatId,
+      credits:     apiResult.request.credits,
+      amountPHP:   apiResult.request.amountPHP,
+      licenseKey:  apiResult.request.licenseKey,
+      requestType: apiResult.request.requestType || 'topup',
     } : null);
 
     if (info && info.chatId) {
       if (status === 'approved') {
-        // The backend auto-adds credits; creditAdded flag is explicitly true on success
-        const creditAdded = apiResult && apiResult.creditAdded === true;
-        const creditNote = creditAdded
-          ? `✅ Credits have been added to your license\\.`
-          : `⚠️ Credits could not be added automatically\\. Please contact support with your Request ID\\.`;
-        await bot.sendMessage(info.chatId,
-          [
-            `🎉 *Your purchase request has been APPROVED\\!*`,
+        const newLicenseKey = apiResult && apiResult.newLicenseKey ? apiResult.newLicenseKey : null;
+        const creditAdded   = apiResult && apiResult.creditAdded === true;
+        const reqType       = (info.requestType || apiResult?.request?.requestType || 'topup');
+
+        if (reqType === 'new_registration' && newLicenseKey) {
+          // New registration approved — send the generated license key
+          await bot.sendMessage(info.chatId,
+            [
+              `🎉 *Welcome to AnasFlightsV2\\!*`,
+              ``,
+              `Your payment has been *APPROVED* and your account is ready\\!`,
+              ``,
+              `🎟 Credits purchased: *${escMd(String(info.credits))}*`,
+              `💰 Amount: *${escMd(fmtPHP(info.amountPHP))}*`,
+              ``,
+              `🔑 *Your License Key:*`,
+              `\`${escMd(newLicenseKey)}\``,
+              ``,
+              `⚠️ *Please save this key\\!* It is your account identifier\\.`,
+              `Use /start to access your dashboard\\.`,
+              ``,
+              `Thank you for joining AnasFlightsV2\\! ✈️`,
+            ].join('\n'),
+            { parse_mode: 'MarkdownV2' }
+          );
+        } else {
+          // Top-up approved
+          const creditNote = creditAdded
+            ? `✅ *${escMd(String(info.credits))} credits* have been added to your license\\.`
+            : `⚠️ Credits could not be added automatically\\. Please contact support with your Request ID\\.`;
+
+          // Fetch updated balance
+          let updatedBalance = null;
+          try {
+            const licData = await apiGet(`/api/bot/licenses/check-telegram/${encodeURIComponent(userId)}`);
+            if (licData && licData.registered) updatedBalance = licData.credits;
+          } catch (_) {}
+
+          const approvalLines = [
+            `🎉 *Top\\-up Approved\\!*`,
             ``,
-            `🎟 Credits: *${escMd(String(info.credits))}*`,
-            `💰 Amount: *${escMd(fmtPHP(info.amountPHP))}*`,
+            `💰 Amount paid: *${escMd(fmtPHP(info.amountPHP))}*`,
             `🔑 License: \`${escMd(info.licenseKey || 'N/A')}\``,
             ``,
             creditNote,
-            `Thank you for your purchase\\! ✈️`,
-          ].join('\n'),
-          { parse_mode: 'MarkdownV2' }
-        );
+          ];
+          if (updatedBalance !== null) {
+            approvalLines.push(`💳 *Updated balance: ${escMd(String(updatedBalance))} credits*`);
+          }
+          approvalLines.push(``, `Thank you for your purchase\\! ✈️`);
+
+          await bot.sendMessage(info.chatId, approvalLines.join('\n'), { parse_mode: 'MarkdownV2' });
+        }
       } else {
-        await bot.sendMessage(info.chatId,
-          [
-            `❌ *Your purchase request has been DENIED\\.*`,
-            ``,
-            `🎟 Credits: *${escMd(String(info.credits))}*`,
-            `💰 Amount: *${escMd(fmtPHP(info.amountPHP))}*`,
-            ``,
-            `If you believe this is a mistake or have questions, please contact support\\.`,
-          ].join('\n'),
-          { parse_mode: 'MarkdownV2' }
+        // Denied
+        const reason = (apiResult && apiResult.request && apiResult.request.adminNote)
+          ? apiResult.request.adminNote
+          : null;
+        const denialLines = [
+          `❌ *Your purchase request has been DENIED\\.*`,
+          ``,
+          `🎟 Credits: *${escMd(String(info.credits))}*`,
+          `💰 Amount: *${escMd(fmtPHP(info.amountPHP))}*`,
+        ];
+        if (reason) {
+          denialLines.push(``, `📝 *Reason:* ${escMd(reason)}`);
+        }
+        denialLines.push(
+          ``,
+          `If you believe this is a mistake, please contact support\\.`,
+          `You may submit a new payment at any time using /start\\.`
         );
+        await bot.sendMessage(info.chatId, denialLines.join('\n'), { parse_mode: 'MarkdownV2' });
       }
     }
     pendingApprovals.delete(reqIdNum);
@@ -852,12 +1184,63 @@ bot.on('callback_query', async (query) => {
 bot.on('message', async (msg) => {
   if (!msg.from) return;
 
-  const userId  = String(msg.from.id);
-  const chatId  = msg.chat.id;
+  const userId   = String(msg.from.id);
+  const chatId   = msg.chat.id;
+  const username = msg.from.username || msg.from.first_name || '';
+
+  // ── Phase: awaiting existing license key ─────────────────────────────────
+  if (awaitingExistingLicense.has(userId)) {
+    if (!msg.text || msg.text.startsWith('/')) return;
+
+    const licenseKey = msg.text.trim();
+
+    if (!LICENSE_KEY_REGEX.test(licenseKey)) {
+      await bot.sendMessage(chatId,
+        `⚠️ Invalid license key format\\. Keys look like *LIC\\-XXXXXXXXXXXXXXXX*\\.\\n\\nPlease try again\\.`,
+        { parse_mode: 'MarkdownV2' }
+      );
+      return;
+    }
+
+    // Try to link it
+    try {
+      await apiPost('/api/bot/licenses/register', {
+        licenseKey,
+        telegramUserId: userId,
+        chatId: String(chatId),
+        username,
+      });
+      awaitingExistingLicense.delete(userId);
+      await bot.sendMessage(chatId,
+        [
+          `✅ *Account Linked Successfully\\!*`,
+          ``,
+          `🔑 License \`${escMd(licenseKey)}\` is now linked to your Telegram account\\.`,
+          ``,
+          `Loading your dashboard\\.\\.\\.`,
+        ].join('\n'),
+        { parse_mode: 'MarkdownV2' }
+      );
+      await sendDashboard(chatId, userId, username);
+    } catch (e) {
+      const errMsg = e.response && e.response.data && e.response.data.error
+        ? e.response.data.error
+        : e.message;
+      // Do NOT delete from awaitingExistingLicense — let them retry
+      await bot.sendMessage(chatId,
+        [
+          `❌ *Could not link license:* ${escMd(errMsg)}`,
+          ``,
+          `Please enter a valid license key, or use /start to go back\\.`,
+        ].join('\n'),
+        { parse_mode: 'MarkdownV2' }
+      );
+    }
+    return;
+  }
 
   // ── Phase 1: awaiting credit count ────────────────────────────────────────
   if (awaitingCreditCount.has(userId)) {
-    // Only handle non-command text in this phase
     if (!msg.text || msg.text.startsWith('/')) return;
 
     const pending = awaitingCreditCount.get(userId);
@@ -880,123 +1263,20 @@ bot.on('message', async (msg) => {
     }
 
     awaitingCreditCount.delete(userId);
-
     const amountPHP = count * pending.pricePerCredit;
 
-    // Determine caption depending on whether we already know the license key.
-    const alreadyHasKey = !!pending.licenseKey;
-    const captionLines = [
-      `🎟 *Credits requested: ${escMd(String(count))}*`,
-      `💰 *Total to pay: ${escMd(fmtPHP(amountPHP))}*`,
-      ``,
-      `📱 *Scan the QR code below* to make your GCash/bank payment\\.`,
-      ``,
-      `⚠️ *IMPORTANT:*`,
-      `• Pay the *exact amount* shown above`,
-      `• Credits are *NON\\-REFUNDABLE* once confirmed`,
-    ];
-    if (alreadyHasKey) {
-      captionLines.push(``, `After paying, send us a *photo* of your payment receipt\\.`);
-    } else {
-      captionLines.push(``, `After paying, reply with your *license key* \\(e\\.g\\. LIC\\-XXXXXXXX\\)\\.`);
-    }
-    const caption = captionLines.join('\n');
-
-    // Send QR code image: try filesystem path first, then URL via API_URL, then text fallback.
-    let qrSent = false;
-    if (QR_CODE_PATH) {
-      if (fs.existsSync(QR_CODE_PATH)) {
-        try {
-          await bot.sendPhoto(chatId, fs.createReadStream(QR_CODE_PATH), { caption, parse_mode: 'MarkdownV2' });
-          qrSent = true;
-        } catch (e) {
-          console.error('[ERROR] sendPhoto (file) failed:', e.message);
-        }
-      }
-      if (!qrSent && API_URL) {
-        const qrUrl = buildQrCodeUrl(API_URL, QR_CODE_PATH);
-        try {
-          await bot.sendPhoto(chatId, qrUrl, { caption, parse_mode: 'MarkdownV2' });
-          qrSent = true;
-        } catch (e) {
-          console.error('[ERROR] sendPhoto (url) failed:', e.message);
-        }
-      }
-    }
-    if (!qrSent) {
-      await bot.sendMessage(chatId, caption, { parse_mode: 'MarkdownV2' });
-    }
-
-    if (alreadyHasKey) {
-      // License key already known — skip Phase 2, go directly to receipt phase.
-      awaitingReceipt.set(userId, {
-        credits: count,
-        amountPHP,
-        licenseKey: pending.licenseKey,
-      });
-      await bot.sendMessage(chatId,
-        `📸 Please *send a photo* of your payment receipt as proof of payment\\.`,
-        { parse_mode: 'MarkdownV2', reply_markup: { force_reply: true, input_field_placeholder: 'Send photo here' } }
-      );
-    } else {
-      // Move to license key phase (user must enter their key).
-      awaitingLicenseKey.set(userId, { credits: count, amountPHP });
-      await bot.sendMessage(chatId,
-        `🔑 Please reply with your *license key* \\(e\\.g\\. LIC\\-XXXXXXXX\\)\\.`,
-        { parse_mode: 'MarkdownV2', reply_markup: { force_reply: true, input_field_placeholder: 'LIC-XXXXXXXX' } }
-      );
-    }
+    await sendQRAndAskReceipt(chatId, userId, count, amountPHP, pending.requestType, pending.licenseKey);
     return;
   }
 
-  // ── Phase 2: awaiting license key ─────────────────────────────────────────
-  if (awaitingLicenseKey.has(userId)) {
-    if (!msg.text || msg.text.startsWith('/')) return;
-
-    const pending = awaitingLicenseKey.get(userId);
-    const licenseKey = msg.text.trim();
-
-    // Basic format validation: must start with LIC- and have at least 6 chars after
-    if (!LICENSE_KEY_REGEX.test(licenseKey)) {
-      await bot.sendMessage(chatId,
-        `⚠️ Invalid license key format\\. License keys look like *LIC\\-XXXXXXXX*\\.\n\nPlease reply with your correct license key\\.`,
-        { parse_mode: 'MarkdownV2' }
-      );
-      return;
-    }
-
-    awaitingLicenseKey.delete(userId);
-
-    // Move to receipt phase
-    awaitingReceipt.set(userId, {
-      credits: pending.credits,
-      amountPHP: pending.amountPHP,
-      licenseKey,
-    });
-
-    await bot.sendMessage(chatId,
-      [
-        `✅ *License key received:* \`${escMd(licenseKey)}\``,
-        ``,
-        `📸 Now please *send a photo* of your payment receipt or proof of payment\\.`,
-        ``,
-        `_Make sure the amount and reference number are clearly visible\\._`,
-      ].join('\n'),
-      { parse_mode: 'MarkdownV2', reply_markup: { force_reply: true, input_field_placeholder: 'Send photo here' } }
-    );
-    return;
-  }
-
-  // ── Phase 3: awaiting receipt photo ───────────────────────────────────────
+  // ── Phase 2: awaiting receipt photo ───────────────────────────────────────
   if (awaitingReceipt.has(userId)) {
     const pending = awaitingReceipt.get(userId);
 
-    // Accept photo or document as proof of payment
     const hasPhoto    = Array.isArray(msg.photo) && msg.photo.length > 0;
     const hasDocument = msg.document != null;
 
     if (!hasPhoto && !hasDocument) {
-      // If the user sends text instead of a photo, remind them
       if (msg.text && !msg.text.startsWith('/')) {
         await bot.sendMessage(chatId,
           `📸 Please *send a photo* of your payment receipt as proof of payment\\.`,
@@ -1008,106 +1288,52 @@ bot.on('message', async (msg) => {
 
     awaitingReceipt.delete(userId);
 
-    // Create purchase request in backend
-    let requestId;
-    try {
-      const result = await apiPost('/api/bot/purchase-requests', {
-        telegramUserId: userId,
-        username: msg.from.username || msg.from.first_name || '',
-        chatId: String(chatId),
-        packageId: CUSTOM_PACKAGE_ID,
-        packageName: CUSTOM_PACKAGE_NAME,
-        credits: pending.credits,
-        amountPHP: pending.amountPHP,
-        licenseKey: pending.licenseKey,
-      });
-      requestId = result.id;
-    } catch (e) {
-      await bot.sendMessage(chatId,
-        `❌ Failed to submit your request: ${escMd(e.message)}\\. Please try again with /help\\.`,
-        { parse_mode: 'MarkdownV2' }
-      );
-      return;
-    }
+    const fileId  = hasPhoto ? msg.photo[msg.photo.length - 1].file_id : msg.document.file_id;
+    const isPhoto = hasPhoto;
 
-    // Confirm to user
+    // Move to reference number phase
+    awaitingReferenceNumber.set(userId, {
+      credits:     pending.credits,
+      amountPHP:   pending.amountPHP,
+      requestType: pending.requestType,
+      licenseKey:  pending.licenseKey || '',
+      fileId,
+      isPhoto,
+    });
+
     await bot.sendMessage(chatId,
       [
-        `✅ *Purchase Request Submitted\\!*`,
+        `✅ *Receipt received\\!*`,
         ``,
-        `🎟 Credits: *${escMd(String(pending.credits))}*`,
-        `💰 Amount: *${escMd(fmtPHP(pending.amountPHP))}*`,
-        `🔑 License: \`${escMd(pending.licenseKey)}\``,
-        `📋 Request ID: \`${escMd(String(requestId))}\``,
+        `Please enter your GCash or bank *reference number* for verification\\.`,
         ``,
-        `Your payment proof has been forwarded to our team for review\\.`,
-        `You will be notified once it is approved or denied\\.`,
-        ``,
-        `⚠️ Reminder: Credits are *NON\\-REFUNDABLE* once confirmed\\.`,
+        `_If you don't have one, type_ *skip* _to continue without it\\._`,
       ].join('\n'),
-      { parse_mode: 'MarkdownV2' }
+      { parse_mode: 'MarkdownV2', reply_markup: { force_reply: true, input_field_placeholder: 'e.g. 123456789 or skip' } }
     );
+    return;
+  }
 
-    // Forward receipt photo to payment group with approve/deny buttons
-    if (PAYMENT_GROUP_ID) {
-      const groupCaption = [
-        `💳 *New Purchase Request \\#${escMd(String(requestId))}*`,
-        ``,
-        `👤 User: @${escMd(msg.from.username || String(userId))} \\(ID: \`${escMd(userId)}\`\\)`,
-        `🎟 Credits: *${escMd(String(pending.credits))}*`,
-        `💰 Amount due: *${escMd(fmtPHP(pending.amountPHP))}*`,
-        `🔑 License: \`${escMd(pending.licenseKey)}\``,
-        `🕐 Time: ${escMd(fmtDate(new Date().toISOString()))}`,
-        ``,
-        `✅ Approve if payment amount matches\\. ❌ Deny if it does not\\.`,
-      ].join('\n');
+  // ── Phase 3: awaiting reference number ────────────────────────────────────
+  if (awaitingReferenceNumber.has(userId)) {
+    if (!msg.text || msg.text.startsWith('/')) return;
 
-      const approvalKeyboard = {
-        inline_keyboard: [[
-          { text: '✅ Approve', callback_data: `approve:${requestId}` },
-          { text: '❌ Deny',    callback_data: `deny:${requestId}` },
-        ]],
-      };
+    const pending = awaitingReferenceNumber.get(userId);
+    awaitingReferenceNumber.delete(userId);
 
-      try {
-        if (hasPhoto) {
-          // Use the highest-quality photo (last item in array)
-          const fileId = msg.photo[msg.photo.length - 1].file_id;
-          await bot.sendPhoto(PAYMENT_GROUP_ID, fileId, {
-            caption: groupCaption,
-            parse_mode: 'MarkdownV2',
-            reply_markup: approvalKeyboard,
-          });
-        } else {
-          // Document (PDF, etc.)
-          await bot.sendDocument(PAYMENT_GROUP_ID, msg.document.file_id, {
-            caption: groupCaption,
-            parse_mode: 'MarkdownV2',
-            reply_markup: approvalKeyboard,
-          });
-        }
+    const referenceNumber = msg.text.trim().toLowerCase() === 'skip' ? '' : msg.text.trim();
 
-        // Track for approve/deny callback
-        pendingApprovals.set(requestId, {
-          chatId:     String(chatId),
-          userId,
-          credits:    pending.credits,
-          amountPHP:  pending.amountPHP,
-          licenseKey: pending.licenseKey,
-          username:   msg.from.username || '',
-        });
-      } catch (e) {
-        console.error('[ERROR] Forward to payment group failed:', e.message);
-      }
-    }
+    await submitPurchaseRequest(chatId, userId, username, {
+      ...pending,
+      referenceNumber,
+    });
     return;
   }
 
   // ── No active state ────────────────────────────────────────────────────────
-  // Ignore commands; for any other non-command text give a helpful nudge
   if (msg.text && !msg.text.startsWith('/')) {
     await bot.sendMessage(chatId,
-      `💡 Use /help to buy credits or /register to link your license key\\.`,
+      `💡 Use /start to register or access your dashboard\\.`,
       { parse_mode: 'MarkdownV2' }
     );
   }
@@ -1132,4 +1358,3 @@ process.on('SIGTERM', () => {
   bot.stopPolling();
   process.exit(0);
 });
-

@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -123,7 +124,28 @@ func createSchema() error {
 	// Migration: add telegram link columns to licenses tables that predate this change.
 	db.Exec(`ALTER TABLE licenses ADD COLUMN telegram_user_id TEXT DEFAULT ''`)
 	db.Exec(`ALTER TABLE licenses ADD COLUMN telegram_chat_id TEXT DEFAULT ''`)
+	// Migration: add new columns to purchase_requests for reference number, request type, and reviewer.
+	// SQLite does not support IF NOT EXISTS on ALTER TABLE; ignore "duplicate column" errors.
+	for _, col := range []string{
+		`ALTER TABLE purchase_requests ADD COLUMN reference_number TEXT DEFAULT ''`,
+		`ALTER TABLE purchase_requests ADD COLUMN request_type TEXT DEFAULT 'topup'`,
+		`ALTER TABLE purchase_requests ADD COLUMN reviewed_by TEXT DEFAULT ''`,
+	} {
+		if _, err := db.Exec(col); err != nil && !isColumnExistsErr(err) {
+			return fmt.Errorf("schema migration: %w", err)
+		}
+	}
 	return nil
+}
+
+// isColumnExistsErr returns true when SQLite reports that a column already exists,
+// which is the expected outcome when running ALTER TABLE migrations more than once.
+func isColumnExistsErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "duplicate column") ||
+		strings.Contains(err.Error(), "already exists")
 }
 
 // ── Admin ─────────────────────────────────────────────────────────────────────
@@ -658,26 +680,32 @@ func dbListSubscribers() ([]TelegramSubscriber, error) {
 // ── Purchase Requests ─────────────────────────────────────────────────────────
 
 type PurchaseRequest struct {
-	ID             int64     `json:"id"`
-	TelegramUserID string    `json:"telegramUserId"`
-	Username       string    `json:"username"`
-	ChatID         string    `json:"chatId"`
-	PackageID      int64     `json:"packageId"`
-	PackageName    string    `json:"packageName"`
-	Credits        int       `json:"credits"`
-	AmountPHP      float64   `json:"amountPHP"`
-	LicenseKey     string    `json:"licenseKey"`
-	Status         string    `json:"status"`
-	AdminNote      string    `json:"adminNote"`
-	CreatedAt      time.Time `json:"createdAt"`
-	UpdatedAt      time.Time `json:"updatedAt"`
+	ID              int64     `json:"id"`
+	TelegramUserID  string    `json:"telegramUserId"`
+	Username        string    `json:"username"`
+	ChatID          string    `json:"chatId"`
+	PackageID       int64     `json:"packageId"`
+	PackageName     string    `json:"packageName"`
+	Credits         int       `json:"credits"`
+	AmountPHP       float64   `json:"amountPHP"`
+	LicenseKey      string    `json:"licenseKey"`
+	Status          string    `json:"status"`
+	AdminNote       string    `json:"adminNote"`
+	ReferenceNumber string    `json:"referenceNumber"`
+	RequestType     string    `json:"requestType"`
+	ReviewedBy      string    `json:"reviewedBy"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
 }
 
-func dbCreatePurchaseRequest(telegramUserID, username, chatID string, packageID int64, packageName string, credits int, amountPHP float64, licenseKey string) (int64, error) {
+func dbCreatePurchaseRequest(telegramUserID, username, chatID string, packageID int64, packageName string, credits int, amountPHP float64, licenseKey, referenceNumber, requestType string) (int64, error) {
+	if requestType == "" {
+		requestType = "topup"
+	}
 	r, err := db.Exec(
-		`INSERT INTO purchase_requests (telegram_user_id, telegram_username, telegram_chat_id, package_id, package_name, credits, amount_php, license_key)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		telegramUserID, username, chatID, packageID, packageName, credits, amountPHP, licenseKey)
+		`INSERT INTO purchase_requests (telegram_user_id, telegram_username, telegram_chat_id, package_id, package_name, credits, amount_php, license_key, reference_number, request_type)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		telegramUserID, username, chatID, packageID, packageName, credits, amountPHP, licenseKey, referenceNumber, requestType)
 	if err != nil {
 		return 0, err
 	}
@@ -688,10 +716,14 @@ func dbGetPurchaseRequest(id int64) (*PurchaseRequest, error) {
 	p := &PurchaseRequest{}
 	err := db.QueryRow(
 		`SELECT id, telegram_user_id, telegram_username, telegram_chat_id, package_id, package_name,
-		        credits, amount_php, license_key, status, admin_note, created_at, updated_at
+		        credits, amount_php, license_key, status, admin_note,
+		        COALESCE(reference_number,''), COALESCE(request_type,'topup'), COALESCE(reviewed_by,''),
+		        created_at, updated_at
 		 FROM purchase_requests WHERE id=?`, id,
 	).Scan(&p.ID, &p.TelegramUserID, &p.Username, &p.ChatID, &p.PackageID, &p.PackageName,
-		&p.Credits, &p.AmountPHP, &p.LicenseKey, &p.Status, &p.AdminNote, &p.CreatedAt, &p.UpdatedAt)
+		&p.Credits, &p.AmountPHP, &p.LicenseKey, &p.Status, &p.AdminNote,
+		&p.ReferenceNumber, &p.RequestType, &p.ReviewedBy,
+		&p.CreatedAt, &p.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -701,10 +733,17 @@ func dbGetPurchaseRequest(id int64) (*PurchaseRequest, error) {
 	return p, nil
 }
 
-func dbUpdatePurchaseRequestStatus(id int64, status, adminNote string) error {
+func dbUpdatePurchaseRequestStatus(id int64, status, adminNote, reviewedBy string) error {
 	_, err := db.Exec(
-		`UPDATE purchase_requests SET status=?, admin_note=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
-		status, adminNote, id)
+		`UPDATE purchase_requests SET status=?, admin_note=?, reviewed_by=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+		status, adminNote, reviewedBy, id)
+	return err
+}
+
+func dbUpdatePurchaseRequestLicenseKey(id int64, licenseKey string) error {
+	_, err := db.Exec(
+		`UPDATE purchase_requests SET license_key=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+		licenseKey, id)
 	return err
 }
 
@@ -714,12 +753,16 @@ func dbListPurchaseRequests(status string) ([]PurchaseRequest, error) {
 	if status != "" {
 		rows, err = db.Query(
 			`SELECT id, telegram_user_id, telegram_username, telegram_chat_id, package_id, package_name,
-			        credits, amount_php, license_key, status, admin_note, created_at, updated_at
+			        credits, amount_php, license_key, status, admin_note,
+			        COALESCE(reference_number,''), COALESCE(request_type,'topup'), COALESCE(reviewed_by,''),
+			        created_at, updated_at
 			 FROM purchase_requests WHERE status=? ORDER BY created_at DESC`, status)
 	} else {
 		rows, err = db.Query(
 			`SELECT id, telegram_user_id, telegram_username, telegram_chat_id, package_id, package_name,
-			        credits, amount_php, license_key, status, admin_note, created_at, updated_at
+			        credits, amount_php, license_key, status, admin_note,
+			        COALESCE(reference_number,''), COALESCE(request_type,'topup'), COALESCE(reviewed_by,''),
+			        created_at, updated_at
 			 FROM purchase_requests ORDER BY created_at DESC LIMIT 100`) // cap at 100 for the unfiltered admin overview
 	}
 	if err != nil {
@@ -730,7 +773,38 @@ func dbListPurchaseRequests(status string) ([]PurchaseRequest, error) {
 	for rows.Next() {
 		var p PurchaseRequest
 		if e := rows.Scan(&p.ID, &p.TelegramUserID, &p.Username, &p.ChatID, &p.PackageID, &p.PackageName,
-			&p.Credits, &p.AmountPHP, &p.LicenseKey, &p.Status, &p.AdminNote, &p.CreatedAt, &p.UpdatedAt); e != nil {
+			&p.Credits, &p.AmountPHP, &p.LicenseKey, &p.Status, &p.AdminNote,
+			&p.ReferenceNumber, &p.RequestType, &p.ReviewedBy,
+			&p.CreatedAt, &p.UpdatedAt); e != nil {
+			return nil, e
+		}
+		list = append(list, p)
+	}
+	return list, rows.Err()
+}
+
+func dbListPurchaseRequestsByTelegramUserID(telegramUserID string, limit int) ([]PurchaseRequest, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	rows, err := db.Query(
+		`SELECT id, telegram_user_id, telegram_username, telegram_chat_id, package_id, package_name,
+		        credits, amount_php, license_key, status, admin_note,
+		        COALESCE(reference_number,''), COALESCE(request_type,'topup'), COALESCE(reviewed_by,''),
+		        created_at, updated_at
+		 FROM purchase_requests WHERE telegram_user_id=? ORDER BY created_at DESC LIMIT ?`,
+		telegramUserID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []PurchaseRequest
+	for rows.Next() {
+		var p PurchaseRequest
+		if e := rows.Scan(&p.ID, &p.TelegramUserID, &p.Username, &p.ChatID, &p.PackageID, &p.PackageName,
+			&p.Credits, &p.AmountPHP, &p.LicenseKey, &p.Status, &p.AdminNote,
+			&p.ReferenceNumber, &p.RequestType, &p.ReviewedBy,
+			&p.CreatedAt, &p.UpdatedAt); e != nil {
 			return nil, e
 		}
 		list = append(list, p)
