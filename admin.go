@@ -423,7 +423,7 @@ func adminCreateAdminUser(w http.ResponseWriter, r *http.Request) {
 	// Only a full admin can create another full admin.
 	if req.Role == roleAdmin {
 		if c := getCtxClaims(r); c == nil || c.AdminRole != roleAdmin {
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "only superadmin can create admin accounts"})
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "only admin role can create admin accounts"})
 			return
 		}
 	}
