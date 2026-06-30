@@ -23,6 +23,10 @@ var configDefaults = map[string]string{
 	"telegram_bot_token":      "",
 	"telegram_chat_id":        "",
 	"maintenance_message":     "The service is temporarily unavailable. Please try again later.",
+	"bot_webhook_url":         "",
+	"webhook_secret":          "",
+	"telegram_admin_ids":      "",
+	"telegram_payment_group":  "",
 }
 
 var (

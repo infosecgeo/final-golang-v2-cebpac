@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Pusa Pacific — Admin</title>
+<title>AnasFlightsV2 — Admin</title>
 <style>
 :root{--bg:#0f1117;--surface:#1a1d27;--surface2:#212535;--border:#2e3247;--accent:#4f6ef7;--accent-h:#6080ff;--text:#e2e4f0;--muted:#6b7394;--dim:#4a5068;--live:#22c55e;--dead:#ef4444;--warn:#f59e0b;--radius:10px;--shadow:0 8px 32px rgba(0,0,0,.45)}
 *{margin:0;padding:0;box-sizing:border-box}
@@ -85,7 +85,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
 <!-- Login -->
 <div id="loginWrap">
   <div class="login-card">
-    <div class="login-title">✈️ Pusa Pacific</div>
+    <div class="login-title">✈️ AnasFlightsV2</div>
     <div class="login-sub">Administrator Access</div>
     <div class="form-group">
       <label>Username</label>
@@ -103,7 +103,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
 <!-- App -->
 <div id="appWrap">
   <div class="topbar">
-    <span class="topbar-title">✈️ Pusa Pacific Admin</span>
+    <span class="topbar-title">✈️ AnasFlightsV2 Admin</span>
     <span id="maintBadge" class="maint-badge off">Maintenance OFF</span>
     <span class="topbar-user" id="topbarUser"></span>
     <button class="btn-sm btn-red" onclick="doLogout()">Logout</button>
@@ -112,6 +112,8 @@ tr:hover td{background:rgba(255,255,255,.02)}
     <div class="tab active" onclick="switchTab('overview')">Overview</div>
     <div class="tab" onclick="switchTab('licenses')">Licenses</div>
     <div class="tab" onclick="switchTab('sessions')">Sessions</div>
+    <div class="tab" onclick="switchTab('packages')">Credit Packages</div>
+    <div class="tab" onclick="switchTab('purchases')">Purchase Requests</div>
     <div class="tab" onclick="switchTab('config')">Configuration</div>
     <div class="tab" onclick="switchTab('security')">Security</div>
   </div>
@@ -126,6 +128,14 @@ tr:hover td{background:rgba(255,255,255,.02)}
           <button class="btn-sm btn-warn" id="maintToggleBtn" onclick="toggleMaintenance()">Toggle Maintenance</button>
           <button class="btn-sm btn-blue" onclick="loadStats()">Refresh Stats</button>
         </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Telegram Broadcasts</div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+          <button class="btn-sm btn-green" onclick="broadcastOnline()">🚀 Broadcast: AnasFlightsV2 is Online</button>
+          <button class="btn-sm btn-blue" onclick="broadcastPrices()">💰 Broadcast Updated Prices</button>
+        </div>
+        <div id="broadcastStatus" style="margin-top:10px;font-size:12px;color:var(--muted)"></div>
       </div>
     </div>
 
@@ -159,6 +169,51 @@ tr:hover td{background:rgba(255,255,255,.02)}
               <th>Session ID</th><th>Role</th><th>License/Admin</th><th>Created</th><th>Expires</th><th>Actions</th>
             </tr></thead>
             <tbody id="sessionTbody"><tr><td colspan="6" style="color:var(--muted);text-align:center;padding:20px">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Credit Packages -->
+    <div class="section" id="tab-packages">
+      <div class="card">
+        <div class="card-title">Credit Packages</div>
+        <div style="display:flex;gap:10px;margin-bottom:16px">
+          <button class="btn-sm btn-green" onclick="openCreatePackage()">+ New Package</button>
+          <button class="btn-sm btn-blue" onclick="loadPackages()">Refresh</button>
+          <button class="btn-sm btn-warn" onclick="broadcastPrices()">📢 Broadcast Prices</button>
+        </div>
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr>
+              <th>ID</th><th>Name</th><th>Credits</th><th>Price (PHP)</th><th>Status</th><th>Actions</th>
+            </tr></thead>
+            <tbody id="packageTbody"><tr><td colspan="6" style="color:var(--muted);text-align:center;padding:20px">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">QR Code for Payments</div>
+        <p style="font-size:13px;color:var(--muted);margin-bottom:12px">Set the <code>QR_CODE_PATH</code> environment variable in the bot's <code>.env</code> file to the absolute path of your QR code image. The bot will automatically send it to users when they choose a credit package.</p>
+      </div>
+    </div>
+
+    <!-- Purchase Requests -->
+    <div class="section" id="tab-purchases">
+      <div class="card">
+        <div class="card-title">Purchase Requests</div>
+        <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+          <button class="btn-sm btn-blue" onclick="loadPurchases('pending')">Pending</button>
+          <button class="btn-sm btn-green" onclick="loadPurchases('approved')">Approved</button>
+          <button class="btn-sm btn-red" onclick="loadPurchases('denied')">Denied</button>
+          <button class="btn-sm btn-blue" onclick="loadPurchases('')">All</button>
+        </div>
+        <div style="overflow-x:auto">
+          <table>
+            <thead><tr>
+              <th>ID</th><th>User</th><th>Package</th><th>Credits</th><th>Amount</th><th>License</th><th>Status</th><th>Date</th>
+            </tr></thead>
+            <tbody id="purchaseTbody"><tr><td colspan="8" style="color:var(--muted);text-align:center;padding:20px">Click a filter above to load requests</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -302,6 +357,38 @@ tr:hover td{background:rgba(255,255,255,.02)}
   </div>
 </div>
 
+<div class="modal-overlay" id="packageModal">
+  <div class="modal">
+    <div class="modal-title" id="packageModalTitle">New Credit Package</div>
+    <input type="hidden" id="editPackageId">
+    <div class="form-row">
+      <div class="form-group-sm">
+        <label>Package Name</label>
+        <input type="text" id="pkgName" placeholder="e.g. Starter Pack">
+      </div>
+      <div class="form-group-sm">
+        <label>Credits</label>
+        <input type="number" id="pkgCredits" value="10" min="1">
+      </div>
+    </div>
+    <div class="form-group-sm">
+      <label>Price (PHP ₱)</label>
+      <input type="number" id="pkgPrice" value="500" min="1" step="0.01">
+    </div>
+    <div class="form-group-sm">
+      <label>Status</label>
+      <select id="pkgActive">
+        <option value="true">Active</option>
+        <option value="false">Inactive</option>
+      </select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-sm btn-red" onclick="closeModal('packageModal')">Cancel</button>
+      <button class="btn-sm btn-green" onclick="savePackage()">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- Toast container -->
 <div class="toast-container" id="toastContainer"></div>
 
@@ -370,7 +457,7 @@ function showApp() {
 
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach((t,i) => {
-    const names = ['overview','licenses','sessions','config','security'];
+    const names = ['overview','licenses','sessions','packages','purchases','config','security'];
     t.classList.toggle('active', names[i] === name);
   });
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
@@ -378,6 +465,8 @@ function switchTab(name) {
   if (name === 'licenses') loadLicenses();
   if (name === 'sessions') loadSessions();
   if (name === 'config') loadConfig();
+  if (name === 'packages') loadPackages();
+  if (name === 'purchases') loadPurchases('pending');
 }
 
 // ── API helper ─────────────────────────────────────────────────────────────
@@ -720,6 +809,155 @@ function toast(msg, type='info') {
 
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Credit Packages ───────────────────────────────────────────────────────────
+
+async function loadPackages() {
+  const tbody = document.getElementById('packageTbody');
+  tbody.innerHTML = '<tr><td colspan="6" style="color:var(--muted);text-align:center;padding:20px">Loading...</td></tr>';
+  try {
+    const r = await apiFetch('/api/admin/packages');
+    const list = await r.json();
+    if (!list || list.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" style="color:var(--muted);text-align:center;padding:20px">No packages found. Create one to get started.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = list.map(p => {
+      const status = p.active ? `<span class="badge-active">Active</span>` : `<span class="badge-inactive">Inactive</span>`;
+      return `<tr>
+        <td>${escHtml(String(p.id))}</td>
+        <td><b>${escHtml(p.name)}</b></td>
+        <td>${escHtml(String(p.credits))}</td>
+        <td>₱${escHtml(Number(p.pricePHP).toFixed(2))}</td>
+        <td>${status}</td>
+        <td style="display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn-sm btn-blue" onclick="openEditPackage(${escHtml(String(p.id))})">Edit</button>
+          <button class="btn-sm btn-red" onclick="deletePackage(${escHtml(String(p.id))})">Delete</button>
+        </td>
+      </tr>`;
+    }).join('');
+  } catch(e) { toast('Failed to load packages', 'error'); }
+}
+
+function openCreatePackage() {
+  document.getElementById('packageModalTitle').textContent = 'New Credit Package';
+  document.getElementById('editPackageId').value = '';
+  document.getElementById('pkgName').value = '';
+  document.getElementById('pkgCredits').value = '10';
+  document.getElementById('pkgPrice').value = '500';
+  document.getElementById('pkgActive').value = 'true';
+  openModal('packageModal');
+}
+
+function openEditPackage(id) {
+  apiFetch(`/api/admin/packages`).then(r => r.json()).then(list => {
+    const p = (list || []).find(x => x.id === id);
+    if (!p) { toast('Package not found', 'error'); return; }
+    document.getElementById('packageModalTitle').textContent = 'Edit Credit Package';
+    document.getElementById('editPackageId').value = p.id;
+    document.getElementById('pkgName').value = p.name;
+    document.getElementById('pkgCredits').value = p.credits;
+    document.getElementById('pkgPrice').value = p.pricePHP;
+    document.getElementById('pkgActive').value = p.active ? 'true' : 'false';
+    openModal('packageModal');
+  }).catch(() => toast('Failed to load package', 'error'));
+}
+
+async function savePackage() {
+  const id       = document.getElementById('editPackageId').value;
+  const name     = document.getElementById('pkgName').value.trim();
+  const credits  = parseInt(document.getElementById('pkgCredits').value) || 0;
+  const pricePHP = parseFloat(document.getElementById('pkgPrice').value) || 0;
+  const active   = document.getElementById('pkgActive').value === 'true';
+  if (!name || credits <= 0 || pricePHP <= 0) { toast('Name, credits and price are required', 'error'); return; }
+  try {
+    let r;
+    if (id) {
+      r = await apiFetch(`/api/admin/packages/${id}`, { method:'PUT', body: JSON.stringify({name, credits, pricePHP, active}) });
+    } else {
+      r = await apiFetch('/api/admin/packages', { method:'POST', body: JSON.stringify({name, credits, pricePHP}) });
+    }
+    const d = await r.json();
+    if (!r.ok) { toast(d.error || 'Save failed', 'error'); return; }
+    toast(id ? 'Package updated' : 'Package created', 'success');
+    closeModal('packageModal');
+    loadPackages();
+  } catch(e) { toast('Network error', 'error'); }
+}
+
+async function deletePackage(id) {
+  if (!confirm('Delete this package? Users will no longer see it.')) return;
+  try {
+    const r = await apiFetch(`/api/admin/packages/${id}`, {method:'DELETE'});
+    if (r.ok) { toast('Package deleted', 'success'); loadPackages(); }
+    else { const d = await r.json(); toast(d.error||'Delete failed', 'error'); }
+  } catch(e) { toast('Network error', 'error'); }
+}
+
+// ── Purchase Requests ─────────────────────────────────────────────────────────
+
+async function loadPurchases(status) {
+  const tbody = document.getElementById('purchaseTbody');
+  tbody.innerHTML = '<tr><td colspan="8" style="color:var(--muted);text-align:center;padding:20px">Loading...</td></tr>';
+  try {
+    const qs = status ? `?status=${status}` : '';
+    const r = await apiFetch('/api/admin/purchase-requests' + qs);
+    const list = await r.json();
+    if (!list || list.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="8" style="color:var(--muted);text-align:center;padding:20px">No requests found</td></tr>';
+      return;
+    }
+    tbody.innerHTML = list.map(p => {
+      const statusBadge = p.status === 'approved' ? `<span class="badge-active">Approved</span>` :
+                          p.status === 'denied'   ? `<span class="badge-inactive">Denied</span>` :
+                          `<span class="badge-susp">Pending</span>`;
+      return `<tr>
+        <td>${escHtml(String(p.id))}</td>
+        <td style="font-size:12px">@${escHtml(p.username||'')} <span style="color:var(--muted)">(${escHtml(p.telegramUserId)})</span></td>
+        <td>${escHtml(p.packageName)}</td>
+        <td>${escHtml(String(p.credits))}</td>
+        <td>₱${escHtml(Number(p.amountPHP).toFixed(2))}</td>
+        <td style="font-family:monospace;font-size:11px">${escHtml(p.licenseKey||'—')}</td>
+        <td>${statusBadge}</td>
+        <td style="font-size:11px">${new Date(p.createdAt).toLocaleString()}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) { toast('Failed to load purchase requests', 'error'); }
+}
+
+// ── Telegram Broadcasts ───────────────────────────────────────────────────────
+
+async function broadcastOnline() {
+  const el = document.getElementById('broadcastStatus');
+  el.textContent = 'Sending...';
+  try {
+    const r = await apiFetch('/api/admin/broadcast-online', {method:'POST'});
+    if (r.ok) {
+      toast('Online announcement broadcast!', 'success');
+      el.textContent = '✅ Broadcast sent at ' + new Date().toLocaleTimeString();
+    } else {
+      const d = await r.json();
+      toast(d.error || 'Broadcast failed', 'error');
+      el.textContent = '';
+    }
+  } catch(e) { toast('Network error', 'error'); el.textContent = ''; }
+}
+
+async function broadcastPrices() {
+  const el = document.getElementById('broadcastStatus');
+  el.textContent = 'Sending prices...';
+  try {
+    const r = await apiFetch('/api/admin/broadcast-prices', {method:'POST'});
+    if (r.ok) {
+      toast('Price broadcast sent!', 'success');
+      el.textContent = '✅ Price broadcast sent at ' + new Date().toLocaleTimeString();
+    } else {
+      const d = await r.json();
+      toast(d.error || 'Broadcast failed', 'error');
+      el.textContent = '';
+    }
+  } catch(e) { toast('Network error', 'error'); el.textContent = ''; }
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────

@@ -78,6 +78,37 @@ func createSchema() error {
 			message TEXT,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)`,
+		`CREATE TABLE IF NOT EXISTS credit_packages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			credits INTEGER NOT NULL,
+			price_php REAL NOT NULL,
+			active INTEGER DEFAULT 1,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS telegram_subscribers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			telegram_user_id TEXT UNIQUE NOT NULL,
+			telegram_username TEXT DEFAULT '',
+			telegram_chat_id TEXT NOT NULL,
+			subscribed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS purchase_requests (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			telegram_user_id TEXT NOT NULL,
+			telegram_username TEXT DEFAULT '',
+			telegram_chat_id TEXT NOT NULL,
+			package_id INTEGER,
+			package_name TEXT DEFAULT '',
+			credits INTEGER NOT NULL,
+			amount_php REAL NOT NULL,
+			license_key TEXT DEFAULT '',
+			status TEXT DEFAULT 'pending',
+			admin_note TEXT DEFAULT '',
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
@@ -488,4 +519,205 @@ func dbLogTransaction(licenseID *int64, cardMasked, result, recordLocator, passe
 	); err != nil {
 		logError("dbLogTransaction: " + err.Error())
 	}
+}
+
+// ── Credit Packages ───────────────────────────────────────────────────────────
+
+type CreditPackage struct {
+	ID        int64     `json:"id"`
+	Name      string    `json:"name"`
+	Credits   int       `json:"credits"`
+	PricePHP  float64   `json:"pricePHP"`
+	Active    bool      `json:"active"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+func dbListPackages(activeOnly bool) ([]CreditPackage, error) {
+	q := `SELECT id, name, credits, price_php, active, created_at, updated_at FROM credit_packages`
+	if activeOnly {
+		q += ` WHERE active=1`
+	}
+	q += ` ORDER BY price_php ASC`
+	rows, err := db.Query(q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []CreditPackage
+	for rows.Next() {
+		var p CreditPackage
+		var active int
+		if e := rows.Scan(&p.ID, &p.Name, &p.Credits, &p.PricePHP, &active, &p.CreatedAt, &p.UpdatedAt); e != nil {
+			return nil, e
+		}
+		p.Active = active == 1
+		list = append(list, p)
+	}
+	return list, rows.Err()
+}
+
+func dbGetPackage(id int64) (*CreditPackage, error) {
+	p := &CreditPackage{}
+	var active int
+	err := db.QueryRow(
+		`SELECT id, name, credits, price_php, active, created_at, updated_at FROM credit_packages WHERE id=?`, id,
+	).Scan(&p.ID, &p.Name, &p.Credits, &p.PricePHP, &active, &p.CreatedAt, &p.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	p.Active = active == 1
+	return p, nil
+}
+
+func dbCreatePackage(name string, credits int, pricePHP float64) (int64, error) {
+	r, err := db.Exec(
+		`INSERT INTO credit_packages (name, credits, price_php) VALUES (?, ?, ?)`,
+		name, credits, pricePHP)
+	if err != nil {
+		return 0, err
+	}
+	return r.LastInsertId()
+}
+
+func dbUpdatePackage(id int64, name string, credits int, pricePHP float64, active bool) error {
+	activeInt := 0
+	if active {
+		activeInt = 1
+	}
+	_, err := db.Exec(
+		`UPDATE credit_packages SET name=?, credits=?, price_php=?, active=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+		name, credits, pricePHP, activeInt, id)
+	return err
+}
+
+func dbDeletePackage(id int64) error {
+	_, err := db.Exec(`DELETE FROM credit_packages WHERE id=?`, id)
+	return err
+}
+
+// ── Telegram Subscribers ──────────────────────────────────────────────────────
+
+type TelegramSubscriber struct {
+	ID             int64     `json:"id"`
+	TelegramUserID string    `json:"telegramUserId"`
+	Username       string    `json:"username"`
+	ChatID         string    `json:"chatId"`
+	SubscribedAt   time.Time `json:"subscribedAt"`
+}
+
+func dbUpsertSubscriber(telegramUserID, username, chatID string) error {
+	_, err := db.Exec(
+		`INSERT INTO telegram_subscribers (telegram_user_id, telegram_username, telegram_chat_id)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(telegram_user_id) DO UPDATE SET
+		   telegram_username=excluded.telegram_username,
+		   telegram_chat_id=excluded.telegram_chat_id`,
+		telegramUserID, username, chatID)
+	return err
+}
+
+func dbListSubscribers() ([]TelegramSubscriber, error) {
+	rows, err := db.Query(
+		`SELECT id, telegram_user_id, telegram_username, telegram_chat_id, subscribed_at
+		 FROM telegram_subscribers ORDER BY subscribed_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []TelegramSubscriber
+	for rows.Next() {
+		var s TelegramSubscriber
+		if e := rows.Scan(&s.ID, &s.TelegramUserID, &s.Username, &s.ChatID, &s.SubscribedAt); e != nil {
+			return nil, e
+		}
+		list = append(list, s)
+	}
+	return list, rows.Err()
+}
+
+// ── Purchase Requests ─────────────────────────────────────────────────────────
+
+type PurchaseRequest struct {
+	ID             int64     `json:"id"`
+	TelegramUserID string    `json:"telegramUserId"`
+	Username       string    `json:"username"`
+	ChatID         string    `json:"chatId"`
+	PackageID      int64     `json:"packageId"`
+	PackageName    string    `json:"packageName"`
+	Credits        int       `json:"credits"`
+	AmountPHP      float64   `json:"amountPHP"`
+	LicenseKey     string    `json:"licenseKey"`
+	Status         string    `json:"status"`
+	AdminNote      string    `json:"adminNote"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+func dbCreatePurchaseRequest(telegramUserID, username, chatID string, packageID int64, packageName string, credits int, amountPHP float64, licenseKey string) (int64, error) {
+	r, err := db.Exec(
+		`INSERT INTO purchase_requests (telegram_user_id, telegram_username, telegram_chat_id, package_id, package_name, credits, amount_php, license_key)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		telegramUserID, username, chatID, packageID, packageName, credits, amountPHP, licenseKey)
+	if err != nil {
+		return 0, err
+	}
+	return r.LastInsertId()
+}
+
+func dbGetPurchaseRequest(id int64) (*PurchaseRequest, error) {
+	p := &PurchaseRequest{}
+	err := db.QueryRow(
+		`SELECT id, telegram_user_id, telegram_username, telegram_chat_id, package_id, package_name,
+		        credits, amount_php, license_key, status, admin_note, created_at, updated_at
+		 FROM purchase_requests WHERE id=?`, id,
+	).Scan(&p.ID, &p.TelegramUserID, &p.Username, &p.ChatID, &p.PackageID, &p.PackageName,
+		&p.Credits, &p.AmountPHP, &p.LicenseKey, &p.Status, &p.AdminNote, &p.CreatedAt, &p.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func dbUpdatePurchaseRequestStatus(id int64, status, adminNote string) error {
+	_, err := db.Exec(
+		`UPDATE purchase_requests SET status=?, admin_note=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+		status, adminNote, id)
+	return err
+}
+
+func dbListPurchaseRequests(status string) ([]PurchaseRequest, error) {
+	var rows *sql.Rows
+	var err error
+	if status != "" {
+		rows, err = db.Query(
+			`SELECT id, telegram_user_id, telegram_username, telegram_chat_id, package_id, package_name,
+			        credits, amount_php, license_key, status, admin_note, created_at, updated_at
+			 FROM purchase_requests WHERE status=? ORDER BY created_at DESC`, status)
+	} else {
+		rows, err = db.Query(
+			`SELECT id, telegram_user_id, telegram_username, telegram_chat_id, package_id, package_name,
+			        credits, amount_php, license_key, status, admin_note, created_at, updated_at
+			 FROM purchase_requests ORDER BY created_at DESC LIMIT 100`) // cap at 100 for the unfiltered admin overview
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []PurchaseRequest
+	for rows.Next() {
+		var p PurchaseRequest
+		if e := rows.Scan(&p.ID, &p.TelegramUserID, &p.Username, &p.ChatID, &p.PackageID, &p.PackageName,
+			&p.Credits, &p.AmountPHP, &p.LicenseKey, &p.Status, &p.AdminNote, &p.CreatedAt, &p.UpdatedAt); e != nil {
+			return nil, e
+		}
+		list = append(list, p)
+	}
+	return list, rows.Err()
 }

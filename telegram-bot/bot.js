@@ -1,17 +1,20 @@
 /**
- * Pusa Pacific – Telegram Notification Bot
+ * AnasFlightsV2 – Telegram Bot
  *
  * Communicates with the Go backend via:
- *   - Authenticated REST API  (PUSA_API_URL / PUSA_API_KEY)
+ *   - Authenticated REST API  (API_URL / API_KEY)
  *   - Webhook receiver        (listens for push notifications from Go)
  *
  * Required environment variables (set in .env or the process environment):
  *   BOT_TOKEN          – Telegram bot token from @BotFather
  *   ADMIN_CHAT_ID      – Telegram chat/group ID for admin alerts
- *   PUSA_API_URL       – Base URL of the Go backend   (e.g. http://localhost:5000)
- *   PUSA_API_KEY       – Shared secret used as X-Bot-Key header
+ *   API_URL            – Base URL of the Go backend   (e.g. http://localhost:5000)
+ *   API_KEY            – Shared secret used as X-Bot-Key header
  *   WEBHOOK_PORT       – Port this process listens on for push events (default 5100)
  *   WEBHOOK_SECRET     – Secret the Go backend must send as X-Webhook-Secret header
+ *   ADMIN_IDS          – Comma-separated whitelisted Telegram user IDs for /admin_help
+ *   PAYMENT_GROUP_ID   – Private group chat ID for forwarding payment requests
+ *   QR_CODE_PATH       – Absolute path to the QR code image file for payments
  */
 
 'use strict';
@@ -21,16 +24,35 @@ require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const axios       = require('axios');
 const express     = require('express');
-const crypto      = require('crypto');
+const fs          = require('fs');
+const path        = require('path');
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const BOT_TOKEN      = process.env.BOT_TOKEN       || '';
-const ADMIN_CHAT_ID  = process.env.ADMIN_CHAT_ID   || '';
-const API_URL        = (process.env.PUSA_API_URL   || 'http://localhost:5000').replace(/\/$/, '');
-const API_KEY        = process.env.PUSA_API_KEY     || '';
-const WEBHOOK_PORT   = parseInt(process.env.WEBHOOK_PORT || '5100', 10);
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET   || '';
+const BOT_TOKEN          = process.env.BOT_TOKEN           || '';
+const ADMIN_CHAT_ID      = process.env.ADMIN_CHAT_ID       || '';
+const API_URL            = (process.env.API_URL || process.env.PUSA_API_URL || 'http://localhost:5000').replace(/\/$/, '');
+const API_KEY            = process.env.API_KEY  || process.env.PUSA_API_KEY || '';
+const WEBHOOK_PORT       = parseInt(process.env.WEBHOOK_PORT   || '5100', 10);
+const WEBHOOK_SECRET     = process.env.WEBHOOK_SECRET          || '';
+const PAYMENT_GROUP_ID   = process.env.PAYMENT_GROUP_ID        || '';
+const QR_CODE_PATH       = process.env.QR_CODE_PATH            || '';
+
+// Warn if legacy env vars are in use
+if (!process.env.API_URL && process.env.PUSA_API_URL) {
+  console.warn('[WARN] PUSA_API_URL is deprecated. Please rename it to API_URL in your .env file.');
+}
+if (!process.env.API_KEY && process.env.PUSA_API_KEY) {
+  console.warn('[WARN] PUSA_API_KEY is deprecated. Please rename it to API_KEY in your .env file.');
+}
+
+// Whitelisted admin Telegram user IDs (numeric strings)
+const ADMIN_IDS = new Set(
+  (process.env.ADMIN_IDS || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+);
 
 if (!BOT_TOKEN) { console.error('[FATAL] BOT_TOKEN is required.'); process.exit(1); }
 
@@ -38,9 +60,21 @@ if (!BOT_TOKEN) { console.error('[FATAL] BOT_TOKEN is required.'); process.exit(
 
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
-console.log('[INFO] Telegram bot started (polling).');
+console.log('[INFO] AnasFlightsV2 Telegram bot started (polling).');
+
+// ── In-memory conversation state ───────────────────────────────────────────────
+
+// userId (string) → { packageId, packageName, credits, amountPHP }
+const awaitingLicenseKey = new Map();
+
+// messageId in payment group → { requestId, userId, chatId, packageName, credits, amountPHP, licenseKey, username }
+const pendingApprovals = new Map();
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
+
+function isAdmin(userId) {
+  return ADMIN_IDS.has(String(userId));
+}
 
 function escMd(str) {
   if (!str) return '';
@@ -52,9 +86,29 @@ function fmtDate(iso) {
   catch (_) { return iso; }
 }
 
+function fmtPHP(amount) {
+  return '₱' + Number(amount).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
 async function apiGet(path) {
   const r = await axios.get(`${API_URL}${path}`, {
     headers: { 'X-Bot-Key': API_KEY },
+    timeout: 8000,
+  });
+  return r.data;
+}
+
+async function apiPost(path, data) {
+  const r = await axios.post(`${API_URL}${path}`, data, {
+    headers: { 'X-Bot-Key': API_KEY, 'Content-Type': 'application/json' },
+    timeout: 8000,
+  });
+  return r.data;
+}
+
+async function apiPut(path, data) {
+  const r = await axios.put(`${API_URL}${path}`, data, {
+    headers: { 'X-Bot-Key': API_KEY, 'Content-Type': 'application/json' },
     timeout: 8000,
   });
   return r.data;
@@ -67,6 +121,19 @@ async function sendAlert(text, chatId) {
     await bot.sendMessage(target, text, { parse_mode: 'MarkdownV2' });
   } catch (e) {
     console.error('[ERROR] sendAlert failed:', e.message);
+  }
+}
+
+async function registerSubscriber(msg) {
+  if (!msg || !msg.from) return;
+  try {
+    await apiPost('/api/bot/subscribers', {
+      telegramUserId: String(msg.from.id),
+      username: msg.from.username || msg.from.first_name || '',
+      chatId: String(msg.chat.id),
+    });
+  } catch (e) {
+    console.warn('[WARN] registerSubscriber:', e.message);
   }
 }
 
@@ -83,22 +150,9 @@ function verifyWebhook(req, res, next) {
   next();
 }
 
-/**
- * POST /webhook/event
- * Body: { type, payload }
- *
- * Supported event types:
- *   payment_success  – payment authorized
- *   payment_failure  – payment declined
- *   credit_low       – license credits below threshold
- *   maintenance_on   – maintenance mode enabled
- *   maintenance_off  – maintenance mode disabled
- *   admin_alert      – arbitrary admin broadcast
- *   new_session      – new user session started
- */
 app.post('/webhook/event', verifyWebhook, async (req, res) => {
   const { type, payload } = req.body || {};
-  res.json({ ok: true });          // respond immediately
+  res.json({ ok: true });
 
   try {
     switch (type) {
@@ -110,7 +164,7 @@ app.post('/webhook/event', verifyWebhook, async (req, res) => {
           ``,
           `🎫 *Record Locator:* \`${escMd(p.recordLocator || 'N/A')}\``,
           `👤 *Passenger:* ${escMd(p.passengerName || 'N/A')}`,
-          `✈️ *Flight:* ${escMd(p.flightRoute || 'N/A')} ${escMd(p.flightNumber ? '('+p.flightNumber+')' : '')}`,
+          `✈️ *Flight:* ${escMd(p.flightRoute || 'N/A')} ${escMd(p.flightNumber ? '(' + p.flightNumber + ')' : '')}`,
           `💳 *Card:* \`${escMd(p.maskedCard || 'N/A')}\``,
           `📋 *Booking:* ${escMd(p.bookingStatus || 'N/A')}`,
           `💰 *Payment:* ${escMd(p.paymentStatus || 'Authorized')}`,
@@ -147,15 +201,13 @@ app.post('/webhook/event', verifyWebhook, async (req, res) => {
         break;
       }
 
-      case 'maintenance_on': {
+      case 'maintenance_on':
         await sendAlert(`🔧 *Maintenance Mode Enabled*\n\nAll users have been blocked from accessing the system\\.`);
         break;
-      }
 
-      case 'maintenance_off': {
+      case 'maintenance_off':
         await sendAlert(`✅ *Maintenance Mode Disabled*\n\nSystem is back online\\.`);
         break;
-      }
 
       case 'admin_alert': {
         const p = payload || {};
@@ -176,6 +228,36 @@ app.post('/webhook/event', verifyWebhook, async (req, res) => {
         break;
       }
 
+      case 'price_update': {
+        const packages = Array.isArray(payload) ? payload : [];
+        if (packages.length === 0) break;
+        const lines = [
+          `💰 *AnasFlightsV2 — Updated Credit Prices*`,
+          ``,
+          ...packages.filter(p => p.active !== false).map(p =>
+            `🎟 *${escMd(p.name)}* — ${escMd(String(p.credits))} credits for *${escMd(fmtPHP(p.pricePHP))}*`
+          ),
+          ``,
+          `Tap /help to purchase credits\\.`,
+        ];
+        const text = lines.join('\n');
+        await broadcastToSubscribers(text);
+        break;
+      }
+
+      case 'broadcast_online': {
+        const text = [
+          `✈️ *AnasFlightsV2 is now ONLINE and ready for lift\\-off\\!*`,
+          ``,
+          `🚀 Our booking automation service is live and accepting transactions\\.`,
+          `💳 Use /help to subscribe or top up your credits\\.`,
+          ``,
+          `_Safe travels\\!_ 🌏`,
+        ].join('\n');
+        await broadcastToSubscribers(text);
+        break;
+      }
+
       default:
         console.warn('[WARN] Unknown event type:', type);
     }
@@ -185,46 +267,125 @@ app.post('/webhook/event', verifyWebhook, async (req, res) => {
 });
 
 // Health check
-app.get('/health', (_req, res) => res.json({ ok: true, bot: 'pusa-pacific', uptime: process.uptime() }));
+app.get('/health', (_req, res) => res.json({ ok: true, bot: 'AnasFlightsV2', uptime: process.uptime() }));
 
 app.listen(WEBHOOK_PORT, () => {
   console.log(`[INFO] Webhook server listening on port ${WEBHOOK_PORT}`);
 });
 
+// ── Broadcast helpers ──────────────────────────────────────────────────────────
+
+async function broadcastToSubscribers(markdownText) {
+  let subscribers = [];
+  try {
+    subscribers = await apiGet('/api/bot/subscribers');
+  } catch (e) {
+    console.error('[ERROR] broadcastToSubscribers fetch:', e.message);
+    return;
+  }
+  if (!Array.isArray(subscribers) || subscribers.length === 0) return;
+  let sent = 0, failed = 0;
+  for (const sub of subscribers) {
+    try {
+      await bot.sendMessage(sub.chatId, markdownText, { parse_mode: 'MarkdownV2' });
+      sent++;
+    } catch (e) {
+      failed++;
+    }
+    // Small delay to avoid Telegram rate limits (max ~10 msg/sec to different users)
+    await new Promise(r => setTimeout(r, 100));
+  }
+  console.log(`[INFO] Broadcast complete: ${sent} sent, ${failed} failed`);
+}
+
 // ── Bot Commands ───────────────────────────────────────────────────────────────
 
 bot.setMyCommands([
-  { command: 'start',      description: 'Show welcome message' },
-  { command: 'status',     description: 'System status' },
-  { command: 'credits',    description: 'Check credits for a license — /credits LIC-xxx' },
-  { command: 'stats',      description: 'Transaction statistics' },
-  { command: 'maintenance',description: 'Toggle maintenance mode — /maintenance on|off' },
-  { command: 'broadcast',  description: 'Broadcast a message to all admins — /broadcast message' },
-  { command: 'help',       description: 'Show help' },
+  { command: 'start',      description: 'Welcome & registration info' },
+  { command: 'help',       description: 'Help & buy credits' },
+  { command: 'admin_help', description: 'Admin commands (authorized users only)' },
 ]);
 
-bot.onText(/\/start/, async (msg) => {
-  await bot.sendMessage(msg.chat.id,
-    `✈️ *Pusa Pacific Bot*\n\nUse /help to see available commands\\.`,
-    { parse_mode: 'MarkdownV2' }
-  );
-});
+// ── /start ─────────────────────────────────────────────────────────────────────
 
-bot.onText(/\/help/, async (msg) => {
+bot.onText(/\/start/, async (msg) => {
+  await registerSubscriber(msg);
   const text = [
-    `✈️ *Pusa Pacific Bot \\— Commands*`,
+    `✈️ *Welcome to AnasFlightsV2\\!*`,
     ``,
-    `/status \\— System health status`,
-    `/credits \\<key\\> \\— Check credits for a license`,
-    `/stats \\— Transaction stats`,
-    `/maintenance on\\|off \\— Toggle maintenance mode`,
-    `/broadcast \\<msg\\> \\— Send message to admin channel`,
-    `/help \\— This message`,
+    `We provide automated flight booking assistance powered by credits\\.`,
+    ``,
+    `📋 *Terms \\& Conditions*`,
+    `• Credits are *NON\\-REFUNDABLE* once payment is confirmed`,
+    `• Credits are consumed per successful booking transaction`,
+    `• Keep your license key private and secure`,
+    `• Service availability is subject to maintenance windows`,
+    ``,
+    `💡 Use /help to see how to subscribe or buy credits\\.`,
   ].join('\n');
   await bot.sendMessage(msg.chat.id, text, { parse_mode: 'MarkdownV2' });
 });
 
+// ── /help ──────────────────────────────────────────────────────────────────────
+
+bot.onText(/\/help/, async (msg) => {
+  await registerSubscriber(msg);
+  const text = [
+    `✈️ *AnasFlightsV2 — Help*`,
+    ``,
+    `📋 *Terms \\& Conditions*`,
+    `• Credits are *NON\\-REFUNDABLE* once payment is confirmed`,
+    `• Credits are consumed per successful booking transaction`,
+    `• Service availability may be interrupted for maintenance`,
+    ``,
+    `💳 *Buy Credits*`,
+    `Choose a package below to subscribe or top up your account\\.`,
+    `After selecting a package you will receive a QR code for payment\\.`,
+    ``,
+    `/start \\— Welcome \\& registration info`,
+    `/help \\— This message`,
+  ].join('\n');
+
+  await bot.sendMessage(msg.chat.id, text, {
+    parse_mode: 'MarkdownV2',
+    reply_markup: {
+      inline_keyboard: [[
+        { text: '🛒 Buy Credits', callback_data: 'buy_credits' },
+      ]],
+    },
+  });
+});
+
+// ── /admin_help ────────────────────────────────────────────────────────────────
+
+bot.onText(/\/admin_help/, async (msg) => {
+  if (!isAdmin(msg.from.id)) return; // silent — no reply to non-admins
+
+  const text = [
+    `🛡 *AnasFlightsV2 — Admin Commands*`,
+    ``,
+    `*License Management*`,
+    `/credits \\<key\\> \\— Check details of a license`,
+    `/addcredits \\<key\\> \\<amount\\> \\— Add credits to a license`,
+    ``,
+    `*System*`,
+    `/status \\— System health \\& stats`,
+    `/stats \\— Transaction statistics`,
+    `/maintenance on\\|off \\— Toggle maintenance mode`,
+    ``,
+    `*Broadcast*`,
+    `/broadcast \\<msg\\> \\— Send message to admin channel`,
+    `/broadcast\\_online \\— Announce AnasFlightsV2 is online to all subscribers`,
+    `/broadcast\\_prices \\— Send updated credit prices to all subscribers`,
+  ].join('\n');
+
+  await bot.sendMessage(msg.chat.id, text, { parse_mode: 'MarkdownV2' });
+});
+
+// ── /status ────────────────────────────────────────────────────────────────────
+
 bot.onText(/\/status/, async (msg) => {
+  if (!isAdmin(msg.from.id)) return;
   try {
     const data = await apiGet('/api/admin/stats');
     const text = [
@@ -232,9 +393,9 @@ bot.onText(/\/status/, async (msg) => {
       ``,
       `👥 Active Sessions: *${escMd(String(data.activeSessions ?? '?'))}*`,
       `🎫 Total Licenses: *${escMd(String(data.totalLicenses ?? '?'))}*`,
-      `✅ Successful Txns: *${escMd(String(data.successfulTransactions ?? '?'))}*`,
-      `❌ Failed Txns: *${escMd(String(data.failedTransactions ?? '?'))}*`,
-      `🔧 Maintenance: *${data.maintenanceMode ? 'ON' : 'OFF'}*`,
+      `✅ Successful Txns: *${escMd(String(data.successTxns ?? '?'))}*`,
+      `❌ Failed Txns: *${escMd(String((data.totalTxns ?? 0) - (data.successTxns ?? 0)))}*`,
+      `🔧 Maintenance: *${data.maintenance ? 'ON' : 'OFF'}*`,
     ].join('\n');
     await bot.sendMessage(msg.chat.id, text, { parse_mode: 'MarkdownV2' });
   } catch (e) {
@@ -242,20 +403,24 @@ bot.onText(/\/status/, async (msg) => {
   }
 });
 
+// ── /credits ───────────────────────────────────────────────────────────────────
+
 bot.onText(/\/credits (.+)/, async (msg, match) => {
+  if (!isAdmin(msg.from.id)) return;
   const key = (match[1] || '').trim();
   if (!key) { await bot.sendMessage(msg.chat.id, 'Usage: /credits LIC\\-xxx', { parse_mode: 'MarkdownV2' }); return; }
   try {
     const data = await apiGet(`/api/admin/licenses`);
-    const lic = (data || []).find(l => l.licenseKey === key);
+    const lic = (data || []).find(l => l.key === key);
     if (!lic) { await bot.sendMessage(msg.chat.id, `❌ License not found\\.`, { parse_mode: 'MarkdownV2' }); return; }
     const text = [
       `💳 *License Info*`,
       ``,
-      `🔑 Key: \`${escMd(lic.licenseKey)}\``,
+      `🔑 Key: \`${escMd(lic.key)}\``,
       `💰 Credits: *${escMd(String(lic.credits))}*`,
-      `📋 Status: *${escMd(lic.active ? 'Active' : 'Inactive')}*`,
+      `📋 Status: *${escMd(lic.suspended ? 'Suspended' : lic.active ? 'Active' : 'Inactive')}*`,
       `📅 Expires: *${escMd(lic.expiresAt ? fmtDate(lic.expiresAt) : 'Never')}*`,
+      `📝 Notes: ${escMd(lic.notes || '—')}`,
     ].join('\n');
     await bot.sendMessage(msg.chat.id, text, { parse_mode: 'MarkdownV2' });
   } catch (e) {
@@ -263,14 +428,46 @@ bot.onText(/\/credits (.+)/, async (msg, match) => {
   }
 });
 
+// ── /addcredits ────────────────────────────────────────────────────────────────
+
+bot.onText(/\/addcredits (.+)/, async (msg, match) => {
+  if (!isAdmin(msg.from.id)) return;
+  const parts = (match[1] || '').trim().split(/\s+/);
+  if (parts.length < 2) {
+    await bot.sendMessage(msg.chat.id, 'Usage: /addcredits LIC\\-xxx 50', { parse_mode: 'MarkdownV2' });
+    return;
+  }
+  const key = parts[0];
+  const delta = parseInt(parts[1], 10);
+  if (isNaN(delta)) {
+    await bot.sendMessage(msg.chat.id, '❌ Amount must be a number\\.', { parse_mode: 'MarkdownV2' });
+    return;
+  }
+  try {
+    const result = await apiPost(`/api/bot/licenses/${encodeURIComponent(key)}/credits`, {
+      delta,
+      reason: `telegram_bot_addcredits by admin ${msg.from.id}`,
+    });
+    await bot.sendMessage(msg.chat.id,
+      `✅ Credits updated\\!\n🔑 License: \`${escMd(key)}\`\n💰 New balance: *${escMd(String(result.balance))}*`,
+      { parse_mode: 'MarkdownV2' }
+    );
+  } catch (e) {
+    await bot.sendMessage(msg.chat.id, `❌ Error: ${escMd(e.message)}`, { parse_mode: 'MarkdownV2' });
+  }
+});
+
+// ── /stats ─────────────────────────────────────────────────────────────────────
+
 bot.onText(/\/stats/, async (msg) => {
+  if (!isAdmin(msg.from.id)) return;
   try {
     const data = await apiGet('/api/admin/stats');
     const text = [
       `📈 *Transaction Stats*`,
       ``,
-      `✅ Success: *${escMd(String(data.successfulTransactions ?? 0))}*`,
-      `❌ Failed: *${escMd(String(data.failedTransactions ?? 0))}*`,
+      `✅ Success: *${escMd(String(data.successTxns ?? 0))}*`,
+      `📊 Total: *${escMd(String(data.totalTxns ?? 0))}*`,
       `👥 Sessions: *${escMd(String(data.activeSessions ?? 0))}*`,
     ].join('\n');
     await bot.sendMessage(msg.chat.id, text, { parse_mode: 'MarkdownV2' });
@@ -279,7 +476,10 @@ bot.onText(/\/stats/, async (msg) => {
   }
 });
 
+// ── /maintenance ───────────────────────────────────────────────────────────────
+
 bot.onText(/\/maintenance (.+)/, async (msg, match) => {
+  if (!isAdmin(msg.from.id)) return;
   const arg = (match[1] || '').trim().toLowerCase();
   if (arg !== 'on' && arg !== 'off') {
     await bot.sendMessage(msg.chat.id, 'Usage: /maintenance on\\|off', { parse_mode: 'MarkdownV2' }); return;
@@ -298,12 +498,324 @@ bot.onText(/\/maintenance (.+)/, async (msg, match) => {
   }
 });
 
+// ── /broadcast ─────────────────────────────────────────────────────────────────
+
 bot.onText(/\/broadcast (.+)/, async (msg, match) => {
+  if (!isAdmin(msg.from.id)) return;
   const text = (match[1] || '').trim();
   if (!text) { await bot.sendMessage(msg.chat.id, 'Usage: /broadcast message'); return; }
   await sendAlert(`📢 *Broadcast*\n\n${escMd(text)}`);
-  await bot.sendMessage(msg.chat.id, '✅ Broadcast sent\\.', { parse_mode: 'MarkdownV2' });
+  await bot.sendMessage(msg.chat.id, '✅ Broadcast sent to admin channel\\.', { parse_mode: 'MarkdownV2' });
 });
+
+// ── /broadcast_online ──────────────────────────────────────────────────────────
+
+bot.onText(/\/broadcast_online/, async (msg) => {
+  if (!isAdmin(msg.from.id)) return;
+  const text = [
+    `✈️ *AnasFlightsV2 is now ONLINE and ready for lift\\-off\\!*`,
+    ``,
+    `🚀 Our booking automation service is live and accepting transactions\\.`,
+    `💳 Use /help to subscribe or top up your credits\\.`,
+    ``,
+    `_Safe travels\\!_ 🌏`,
+  ].join('\n');
+  await broadcastToSubscribers(text);
+  await bot.sendMessage(msg.chat.id, '✅ Online announcement broadcast to all subscribers\\.', { parse_mode: 'MarkdownV2' });
+});
+
+// ── /broadcast_prices ─────────────────────────────────────────────────────────
+
+bot.onText(/\/broadcast_prices/, async (msg) => {
+  if (!isAdmin(msg.from.id)) return;
+  try {
+    const packages = await apiGet('/api/bot/packages');
+    if (!Array.isArray(packages) || packages.length === 0) {
+      await bot.sendMessage(msg.chat.id, '⚠️ No active packages found\\.', { parse_mode: 'MarkdownV2' });
+      return;
+    }
+    const lines = [
+      `💰 *AnasFlightsV2 — Credit Packages*`,
+      ``,
+      ...packages.map(p => `🎟 *${escMd(p.name)}* — ${escMd(String(p.credits))} credits for *${escMd(fmtPHP(p.pricePHP))}*`),
+      ``,
+      `Tap /help to purchase\\.`,
+    ];
+    await broadcastToSubscribers(lines.join('\n'));
+    await bot.sendMessage(msg.chat.id, '✅ Prices broadcast to all subscribers\\.', { parse_mode: 'MarkdownV2' });
+  } catch (e) {
+    await bot.sendMessage(msg.chat.id, `❌ Error: ${escMd(e.message)}`, { parse_mode: 'MarkdownV2' });
+  }
+});
+
+// ── Inline keyboard callback handler ──────────────────────────────────────────
+
+bot.on('callback_query', async (query) => {
+  const chatId  = query.message.chat.id;
+  const userId  = String(query.from.id);
+  const data    = query.data || '';
+
+  // ── Buy Credits — show package list ────────────────────────────────────────
+  if (data === 'buy_credits') {
+    await bot.answerCallbackQuery(query.id);
+    try {
+      const packages = await apiGet('/api/bot/packages');
+      if (!Array.isArray(packages) || packages.length === 0) {
+        await bot.sendMessage(chatId,
+          '⚠️ No credit packages are available at the moment\\. Please check back later\\.', { parse_mode: 'MarkdownV2' });
+        return;
+      }
+      const keyboard = packages.map(p => [{
+        text: `${p.name} — ${p.credits} credits @ ${fmtPHP(p.pricePHP)}`,
+        callback_data: `pkg:${p.id}:${p.name}:${p.credits}:${p.pricePHP}`,
+      }]);
+      keyboard.push([{ text: '🔙 Back', callback_data: 'back_help' }]);
+      await bot.sendMessage(chatId,
+        `💳 *Choose a Credit Package*\n\n_Select the package you want to purchase:_`,
+        { parse_mode: 'MarkdownV2', reply_markup: { inline_keyboard: keyboard } }
+      );
+    } catch (e) {
+      await bot.sendMessage(chatId, `❌ Failed to load packages: ${escMd(e.message)}`, { parse_mode: 'MarkdownV2' });
+    }
+    return;
+  }
+
+  // ── Back to help ───────────────────────────────────────────────────────────
+  if (data === 'back_help') {
+    await bot.answerCallbackQuery(query.id);
+    await bot.sendMessage(chatId,
+      `✈️ *AnasFlightsV2 — Help*\n\nUse /help to see available commands and buy credits\\.`,
+      { parse_mode: 'MarkdownV2' }
+    );
+    return;
+  }
+
+  // ── Package selected ───────────────────────────────────────────────────────
+  if (data.startsWith('pkg:')) {
+    await bot.answerCallbackQuery(query.id);
+    const parts = data.split(':');
+    // pkg:<id>:<name>:<credits>:<price>
+    const pkgId       = parts[1];
+    const pkgName     = parts[2];
+    const pkgCredits  = parts[3];
+    const pkgPrice    = parseFloat(parts[4]);
+
+    // Store pending state
+    awaitingLicenseKey.set(userId, {
+      packageId:   pkgId,
+      packageName: pkgName,
+      credits:     parseInt(pkgCredits, 10),
+      amountPHP:   pkgPrice,
+    });
+
+    // Send QR code with amount if available
+    const caption = [
+      `✅ *You selected: ${escMd(pkgName)}*`,
+      `💰 *Amount to pay: ${escMd(fmtPHP(pkgPrice))}*`,
+      `🎟 Credits: *${escMd(pkgCredits)}*`,
+      ``,
+      `📱 *Scan the QR code below* to make your payment\\.`,
+      ``,
+      `⚠️ *IMPORTANT:* Credits are *NON\\-REFUNDABLE* once payment is confirmed\\.`,
+      ``,
+      `After paying, please reply with your *license key* so we can process your request\\.`,
+    ].join('\n');
+
+    if (QR_CODE_PATH && fs.existsSync(QR_CODE_PATH)) {
+      try {
+        await bot.sendPhoto(chatId, fs.createReadStream(QR_CODE_PATH), {
+          caption,
+          parse_mode: 'MarkdownV2',
+        });
+      } catch (e) {
+        console.error('[ERROR] sendPhoto failed:', e.message);
+        await bot.sendMessage(chatId, caption, { parse_mode: 'MarkdownV2' });
+      }
+    } else {
+      await bot.sendMessage(chatId, caption, { parse_mode: 'MarkdownV2' });
+    }
+
+    await bot.sendMessage(chatId,
+      `🔑 Please reply with your *license key* \\(e\\.g\\. LIC\\-XXXXXXXX\\) to submit your purchase request\\.`,
+      { parse_mode: 'MarkdownV2', reply_markup: { force_reply: true, input_field_placeholder: 'LIC-XXXXXXXX' } }
+    );
+    return;
+  }
+
+  // ── Approve / Deny from payment group ─────────────────────────────────────
+  if (data.startsWith('approve:') || data.startsWith('deny:')) {
+    if (!isAdmin(query.from.id)) {
+      await bot.answerCallbackQuery(query.id, { text: '⛔ Not authorized.', show_alert: true });
+      return;
+    }
+    const [action, requestId] = data.split(':');
+    const reqIdNum = parseInt(requestId, 10);
+    const pendingInfo = pendingApprovals.get(reqIdNum);
+
+    const status = action === 'approve' ? 'approved' : 'denied';
+    const adminNote = `Action by admin @${query.from.username || query.from.id} on ${fmtDate(new Date().toISOString())}`;
+
+    let apiResult;
+    try {
+      apiResult = await apiPut(`/api/bot/purchase-requests/${reqIdNum}/status`, { status, adminNote });
+    } catch (e) {
+      await bot.answerCallbackQuery(query.id, { text: `❌ Failed to update: ${e.message}`, show_alert: true });
+      return;
+    }
+
+    await bot.answerCallbackQuery(query.id, { text: status === 'approved' ? '✅ Approved!' : '❌ Denied!' });
+
+    // Edit the group message to show outcome
+    try {
+      await bot.editMessageReplyMarkup({ inline_keyboard: [] }, {
+        chat_id: query.message.chat.id,
+        message_id: query.message.message_id,
+      });
+      await bot.editMessageText(
+        query.message.text + `\n\n${status === 'approved' ? '✅ APPROVED' : '❌ DENIED'} by @${query.from.username || query.from.id}`,
+        { chat_id: query.message.chat.id, message_id: query.message.message_id }
+      );
+    } catch (_) {}
+
+    // Notify user — use in-memory state or fall back to DB response data
+    const info = pendingInfo || (apiResult && apiResult.request ? {
+      chatId:      apiResult.request.chatId,
+      packageName: apiResult.request.packageName,
+      credits:     apiResult.request.credits,
+      amountPHP:   apiResult.request.amountPHP,
+      licenseKey:  apiResult.request.licenseKey,
+    } : null);
+
+    if (info && info.chatId) {
+      if (status === 'approved') {
+        await bot.sendMessage(info.chatId,
+          [
+            `🎉 *Your purchase request has been APPROVED\\!*`,
+            ``,
+            `📦 Package: *${escMd(info.packageName)}*`,
+            `🎟 Credits: *${escMd(String(info.credits))}*`,
+            `💰 Amount: *${escMd(fmtPHP(info.amountPHP))}*`,
+            `🔑 License: \`${escMd(info.licenseKey || 'N/A')}\``,
+            ``,
+            `Credits have been added to your license\\. Thank you for your purchase\\! ✈️`,
+          ].join('\n'),
+          { parse_mode: 'MarkdownV2' }
+        );
+      } else {
+        await bot.sendMessage(info.chatId,
+          [
+            `❌ *Your purchase request has been DENIED\\.*`,
+            ``,
+            `📦 Package: *${escMd(info.packageName)}*`,
+            `💰 Amount: *${escMd(fmtPHP(info.amountPHP))}*`,
+            ``,
+            `If you believe this is a mistake, please contact support\\.`,
+          ].join('\n'),
+          { parse_mode: 'MarkdownV2' }
+        );
+      }
+    }
+    pendingApprovals.delete(reqIdNum);
+    return;
+  }
+});
+
+// ── Handle text messages (for license key input) ───────────────────────────────
+
+bot.on('message', async (msg) => {
+  if (!msg.text || msg.text.startsWith('/')) return;
+  if (!msg.from) return;
+
+  const userId  = String(msg.from.id);
+  const chatId  = msg.chat.id;
+  const pending = awaitingLicenseKey.get(userId);
+
+  if (!pending) return;
+
+  const licenseKey = msg.text.trim();
+  awaitingLicenseKey.delete(userId);
+
+  // Create purchase request in backend
+  let requestId;
+  try {
+    const result = await apiPost('/api/bot/purchase-requests', {
+      telegramUserId: userId,
+      username: msg.from.username || msg.from.first_name || '',
+      chatId: String(chatId),
+      packageId: parseInt(pending.packageId, 10),
+      packageName: pending.packageName,
+      credits: pending.credits,
+      amountPHP: pending.amountPHP,
+      licenseKey,
+    });
+    requestId = result.id;
+  } catch (e) {
+    await bot.sendMessage(chatId,
+      `❌ Failed to submit your request: ${escMd(e.message)}\\. Please try again\\.`,
+      { parse_mode: 'MarkdownV2' }
+    );
+    return;
+  }
+
+  // Confirm to user
+  await bot.sendMessage(chatId,
+    [
+      `✅ *Purchase Request Submitted\\!*`,
+      ``,
+      `📦 Package: *${escMd(pending.packageName)}*`,
+      `🎟 Credits: *${escMd(String(pending.credits))}*`,
+      `💰 Amount: *${escMd(fmtPHP(pending.amountPHP))}*`,
+      `🔑 License: \`${escMd(licenseKey)}\``,
+      `📋 Request ID: \`${escMd(String(requestId))}\``,
+      ``,
+      `Your request is now pending review\\. You will be notified once it is approved or denied\\.`,
+      ``,
+      `⚠️ Reminder: Credits are *NON\\-REFUNDABLE* once confirmed\\.`,
+    ].join('\n'),
+    { parse_mode: 'MarkdownV2' }
+  );
+
+  // Forward to payment group
+  if (PAYMENT_GROUP_ID) {
+    const groupMsg = [
+      `💳 *New Purchase Request \\#${escMd(String(requestId))}*`,
+      ``,
+      `👤 User: @${escMd(msg.from.username || String(userId))} \\(ID: \`${escMd(userId)}\`\\)`,
+      `📦 Package: *${escMd(pending.packageName)}*`,
+      `🎟 Credits: *${escMd(String(pending.credits))}*`,
+      `💰 Amount: *${escMd(fmtPHP(pending.amountPHP))}*`,
+      `🔑 License: \`${escMd(licenseKey)}\``,
+      `🕐 Time: ${escMd(fmtDate(new Date().toISOString()))}`,
+    ].join('\n');
+
+    try {
+      const sentMsg = await bot.sendMessage(PAYMENT_GROUP_ID, groupMsg, {
+        parse_mode: 'MarkdownV2',
+        reply_markup: {
+          inline_keyboard: [[
+            { text: '✅ Approve', callback_data: `approve:${requestId}` },
+            { text: '❌ Deny',    callback_data: `deny:${requestId}` },
+          ]],
+        },
+      });
+
+      // Track for approve/deny callback
+      pendingApprovals.set(requestId, {
+        chatId:      String(chatId),
+        userId,
+        packageName: pending.packageName,
+        credits:     pending.credits,
+        amountPHP:   pending.amountPHP,
+        licenseKey,
+        username:    msg.from.username || '',
+      });
+    } catch (e) {
+      console.error('[ERROR] Forward to payment group failed:', e.message);
+    }
+  }
+});
+
+// ── Polling error handler ──────────────────────────────────────────────────────
 
 bot.on('polling_error', (err) => {
   console.error('[ERROR] Polling error:', err.message);
@@ -322,3 +834,4 @@ process.on('SIGTERM', () => {
   bot.stopPolling();
   process.exit(0);
 });
+
