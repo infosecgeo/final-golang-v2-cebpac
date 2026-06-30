@@ -213,6 +213,69 @@ func botAPIRouter(w http.ResponseWriter, r *http.Request) {
 		logSuccess(fmt.Sprintf("Bot: credits adjusted for license %s: delta=%d, new balance=%d", keyStr, req.Delta, newBal))
 		writeJSON(w, 200, map[string]int{"balance": newBal})
 
+	// ── Auto-create license for new Telegram user ────────────────────────────
+	case path == "/licenses/auto-create" && r.Method == http.MethodPost:
+		var req struct {
+			TelegramUserID string `json:"telegramUserId"`
+			ChatID         string `json:"chatId"`
+			Username       string `json:"username"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, 400, map[string]string{"error": "invalid body"})
+			return
+		}
+		if req.TelegramUserID == "" || req.ChatID == "" {
+			writeJSON(w, 400, map[string]string{"error": "telegramUserId and chatId required"})
+			return
+		}
+		// If this Telegram user already has a linked license, return it.
+		existing, err := dbGetLicenseByTelegramUserID(req.TelegramUserID)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		if existing != nil {
+			writeJSON(w, 200, map[string]interface{}{
+				"licenseKey": existing.Key,
+				"isNew":      false,
+				"credits":    existing.Credits,
+			})
+			return
+		}
+		// Generate a unique license key, retrying up to 5 times on collision.
+		var newKey string
+		var licID int64
+		for attempt := 0; attempt < 5; attempt++ {
+			candidate := "LIC-" + strings.ToUpper(randomHex(8))
+			id, createErr := dbCreateLicense(candidate, 0, nil, "auto-created via Telegram bot")
+			if createErr == nil {
+				newKey = candidate
+				licID = id
+				break
+			}
+			if !strings.Contains(createErr.Error(), "UNIQUE") {
+				writeJSON(w, 500, map[string]string{"error": createErr.Error()})
+				return
+			}
+		}
+		if newKey == "" {
+			writeJSON(w, 500, map[string]string{"error": "failed to generate unique license key"})
+			return
+		}
+		// Link the Telegram user to the new license.
+		if err := dbLinkTelegramToLicense(newKey, req.TelegramUserID, req.ChatID); err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		// Also upsert as subscriber so they receive broadcasts.
+		_ = dbUpsertSubscriber(req.TelegramUserID, req.Username, req.ChatID)
+		logSuccess(fmt.Sprintf("Auto-created license %s for Telegram user %s (db id=%d)", newKey, req.TelegramUserID, licID))
+		writeJSON(w, 201, map[string]interface{}{
+			"licenseKey": newKey,
+			"isNew":      true,
+			"credits":    0,
+		})
+
 	// ── Link Telegram account to license (/register command) ─────────────────
 	case path == "/licenses/register" && r.Method == http.MethodPost:
 		var req struct {

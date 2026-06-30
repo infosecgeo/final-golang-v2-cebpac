@@ -55,6 +55,9 @@ mux.HandleFunc("/api/admin/", requireAuth(roleAdmin, adminRouter))
 // Bot API endpoints (authenticated via X-Bot-Key header)
 mux.HandleFunc("/api/bot/", botAPIRouter)
 
+// Static file server for QR codes and other images under /image/
+mux.Handle("/image/", http.StripPrefix("/image/", http.FileServer(http.Dir("./image"))))
+
 // Middleware chain: security headers → maintenance → rate limiter → router
 handler := secureHeaders(maintenanceMiddleware(rateLimit(requestLogger(mux))))
 

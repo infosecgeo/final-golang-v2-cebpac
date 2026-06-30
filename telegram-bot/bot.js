@@ -688,19 +688,47 @@ bot.on('callback_query', async (query) => {
     } catch (e) {
       console.warn('[WARN] Failed to fetch credit price:', e.message);
     }
-    // Store state
-    awaitingCreditCount.set(userId, { pricePerCredit });
-    await bot.sendMessage(chatId,
-      [
-        `✅ *Terms \\& Conditions Accepted\\!*`,
-        ``,
-        `💰 *Price per credit: ${escMd(fmtPHP(pricePerCredit))}*`,
-        ``,
-        `How many credits would you like to purchase?`,
-        `_Minimum: 1 credit_`,
-        ``,
-        `Please reply with a number \\(e\\.g\\. 5\\)\\.`,
-      ].join('\n'),
+
+    // Auto-create or retrieve the user's license key so they don't need to enter it manually.
+    let licenseKey = null;
+    let isNewLicense = false;
+    try {
+      const licResult = await apiPost('/api/bot/licenses/auto-create', {
+        telegramUserId: userId,
+        chatId: String(chatId),
+        username: msg.from.username || msg.from.first_name || '',
+      });
+      licenseKey = licResult.licenseKey || null;
+      isNewLicense = licResult.isNew === true;
+    } catch (e) {
+      console.warn('[WARN] Failed to auto-create license:', e.message);
+    }
+
+    // Store state including the resolved license key.
+    awaitingCreditCount.set(userId, { pricePerCredit, licenseKey });
+
+    const lines = [
+      `✅ *Terms \\& Conditions Accepted\\!*`,
+      ``,
+      `💰 *Price per credit: ${escMd(fmtPHP(pricePerCredit))}*`,
+    ];
+
+    if (licenseKey) {
+      lines.push(``, `🔑 *Your license key:* \`${escMd(licenseKey)}\``);
+      if (isNewLicense) {
+        lines.push(`_This key was created for you\\. Save it — it is your account identifier\\._`);
+      }
+    }
+
+    lines.push(
+      ``,
+      `How many credits would you like to purchase?`,
+      `_Minimum: 1 credit_`,
+      ``,
+      `Please reply with a number \\(e\\.g\\. 5\\)\\.`
+    );
+
+    await bot.sendMessage(chatId, lines.join('\n'),
       { parse_mode: 'MarkdownV2', reply_markup: { force_reply: true, input_field_placeholder: 'e.g. 5' } }
     );
     return;
@@ -846,11 +874,9 @@ bot.on('message', async (msg) => {
 
     const amountPHP = count * pending.pricePerCredit;
 
-    // Move to license key phase
-    awaitingLicenseKey.set(userId, { credits: count, amountPHP });
-
-    // Show QR code and payment details
-    const caption = [
+    // Determine caption depending on whether we already know the license key.
+    const alreadyHasKey = !!pending.licenseKey;
+    const captionLines = [
       `🎟 *Credits requested: ${escMd(String(count))}*`,
       `💰 *Total to pay: ${escMd(fmtPHP(amountPHP))}*`,
       ``,
@@ -859,28 +885,60 @@ bot.on('message', async (msg) => {
       `⚠️ *IMPORTANT:*`,
       `• Pay the *exact amount* shown above`,
       `• Credits are *NON\\-REFUNDABLE* once confirmed`,
-      ``,
-      `After paying, reply with your *license key* \\(e\\.g\\. LIC\\-XXXXXXXX\\)\\.`,
-    ].join('\n');
-
-    if (QR_CODE_PATH && fs.existsSync(QR_CODE_PATH)) {
-      try {
-        await bot.sendPhoto(chatId, fs.createReadStream(QR_CODE_PATH), {
-          caption,
-          parse_mode: 'MarkdownV2',
-        });
-      } catch (e) {
-        console.error('[ERROR] sendPhoto failed:', e.message);
-        await bot.sendMessage(chatId, caption, { parse_mode: 'MarkdownV2' });
-      }
+    ];
+    if (alreadyHasKey) {
+      captionLines.push(``, `After paying, send us a *photo* of your payment receipt\\.`);
     } else {
+      captionLines.push(``, `After paying, reply with your *license key* \\(e\\.g\\. LIC\\-XXXXXXXX\\)\\.`);
+    }
+    const caption = captionLines.join('\n');
+
+    // Send QR code image: try filesystem path first, then URL via API_URL, then text fallback.
+    let qrSent = false;
+    if (QR_CODE_PATH) {
+      if (fs.existsSync(QR_CODE_PATH)) {
+        try {
+          await bot.sendPhoto(chatId, fs.createReadStream(QR_CODE_PATH), { caption, parse_mode: 'MarkdownV2' });
+          qrSent = true;
+        } catch (e) {
+          console.error('[ERROR] sendPhoto (file) failed:', e.message);
+        }
+      }
+      if (!qrSent && API_URL) {
+        const qrUrl = QR_CODE_PATH.startsWith('http')
+          ? QR_CODE_PATH
+          : `${API_URL}${QR_CODE_PATH.startsWith('/') ? '' : '/'}${QR_CODE_PATH}`;
+        try {
+          await bot.sendPhoto(chatId, qrUrl, { caption, parse_mode: 'MarkdownV2' });
+          qrSent = true;
+        } catch (e) {
+          console.error('[ERROR] sendPhoto (url) failed:', e.message);
+        }
+      }
+    }
+    if (!qrSent) {
       await bot.sendMessage(chatId, caption, { parse_mode: 'MarkdownV2' });
     }
 
-    await bot.sendMessage(chatId,
-      `🔑 Please reply with your *license key* \\(e\\.g\\. LIC\\-XXXXXXXX\\)\\.`,
-      { parse_mode: 'MarkdownV2', reply_markup: { force_reply: true, input_field_placeholder: 'LIC-XXXXXXXX' } }
-    );
+    if (alreadyHasKey) {
+      // License key already known — skip Phase 2, go directly to receipt phase.
+      awaitingReceipt.set(userId, {
+        credits: count,
+        amountPHP,
+        licenseKey: pending.licenseKey,
+      });
+      await bot.sendMessage(chatId,
+        `📸 Please *send a photo* of your payment receipt as proof of payment\\.`,
+        { parse_mode: 'MarkdownV2', reply_markup: { force_reply: true, input_field_placeholder: 'Send photo here' } }
+      );
+    } else {
+      // Move to license key phase (user must enter their key).
+      awaitingLicenseKey.set(userId, { credits: count, amountPHP });
+      await bot.sendMessage(chatId,
+        `🔑 Please reply with your *license key* \\(e\\.g\\. LIC\\-XXXXXXXX\\)\\.`,
+        { parse_mode: 'MarkdownV2', reply_markup: { force_reply: true, input_field_placeholder: 'LIC-XXXXXXXX' } }
+      );
+    }
     return;
   }
 
