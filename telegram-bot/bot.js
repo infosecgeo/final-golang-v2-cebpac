@@ -38,6 +38,14 @@ const WEBHOOK_SECRET     = process.env.WEBHOOK_SECRET          || '';
 const PAYMENT_GROUP_ID   = process.env.PAYMENT_GROUP_ID        || '';
 const QR_CODE_PATH       = process.env.QR_CODE_PATH            || '';
 
+// Warn if legacy env vars are in use
+if (!process.env.API_URL && process.env.PUSA_API_URL) {
+  console.warn('[WARN] PUSA_API_URL is deprecated. Please rename it to API_URL in your .env file.');
+}
+if (!process.env.API_KEY && process.env.PUSA_API_KEY) {
+  console.warn('[WARN] PUSA_API_KEY is deprecated. Please rename it to API_KEY in your .env file.');
+}
+
 // Whitelisted admin Telegram user IDs (numeric strings)
 const ADMIN_IDS = new Set(
   (process.env.ADMIN_IDS || '')
@@ -284,8 +292,8 @@ async function broadcastToSubscribers(markdownText) {
     } catch (e) {
       failed++;
     }
-    // Small delay to avoid Telegram rate limits
-    await new Promise(r => setTimeout(r, 50));
+    // Small delay to avoid Telegram rate limits (max ~10 msg/sec to different users)
+    await new Promise(r => setTimeout(r, 100));
   }
   console.log(`[INFO] Broadcast complete: ${sent} sent, ${failed} failed`);
 }
@@ -436,15 +444,12 @@ bot.onText(/\/addcredits (.+)/, async (msg, match) => {
     return;
   }
   try {
-    const licenses = await apiGet('/api/admin/licenses');
-    const lic = (licenses || []).find(l => l.key === key);
-    if (!lic) { await bot.sendMessage(msg.chat.id, `❌ License not found\\.`, { parse_mode: 'MarkdownV2' }); return; }
-    const result = await axios.post(`${API_URL}/api/admin/licenses/${lic.id}/credits`,
-      { delta, reason: `telegram_bot_addcredits by admin ${msg.from.id}` },
-      { headers: { 'Authorization': '******', 'X-Bot-Key': API_KEY, 'Content-Type': 'application/json' }, timeout: 8000 }
-    );
+    const result = await apiPost(`/api/bot/licenses/${encodeURIComponent(key)}/credits`, {
+      delta,
+      reason: `telegram_bot_addcredits by admin ${msg.from.id}`,
+    });
     await bot.sendMessage(msg.chat.id,
-      `✅ Credits updated\\!\n🔑 License: \`${escMd(key)}\`\n💰 New balance: *${escMd(String(result.data.balance))}*`,
+      `✅ Credits updated\\!\n🔑 License: \`${escMd(key)}\`\n💰 New balance: *${escMd(String(result.balance))}*`,
       { parse_mode: 'MarkdownV2' }
     );
   } catch (e) {
@@ -648,10 +653,11 @@ bot.on('callback_query', async (query) => {
     const pendingInfo = pendingApprovals.get(reqIdNum);
 
     const status = action === 'approve' ? 'approved' : 'denied';
-    const adminNote = `Action by admin @${query.from.username || query.from.id} on ${new Date().toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}`;
+    const adminNote = `Action by admin @${query.from.username || query.from.id} on ${fmtDate(new Date().toISOString())}`;
 
+    let apiResult;
     try {
-      await apiPut(`/api/bot/purchase-requests/${reqIdNum}/status`, { status, adminNote });
+      apiResult = await apiPut(`/api/bot/purchase-requests/${reqIdNum}/status`, { status, adminNote });
     } catch (e) {
       await bot.answerCallbackQuery(query.id, { text: `❌ Failed to update: ${e.message}`, show_alert: true });
       return;
@@ -671,38 +677,45 @@ bot.on('callback_query', async (query) => {
       );
     } catch (_) {}
 
-    // Notify user
-    if (pendingInfo) {
-      const userChatId = pendingInfo.chatId;
+    // Notify user — use in-memory state or fall back to DB response data
+    const info = pendingInfo || (apiResult && apiResult.request ? {
+      chatId:      apiResult.request.chatId,
+      packageName: apiResult.request.packageName,
+      credits:     apiResult.request.credits,
+      amountPHP:   apiResult.request.amountPHP,
+      licenseKey:  apiResult.request.licenseKey,
+    } : null);
+
+    if (info && info.chatId) {
       if (status === 'approved') {
-        await bot.sendMessage(userChatId,
+        await bot.sendMessage(info.chatId,
           [
             `🎉 *Your purchase request has been APPROVED\\!*`,
             ``,
-            `📦 Package: *${escMd(pendingInfo.packageName)}*`,
-            `🎟 Credits: *${escMd(String(pendingInfo.credits))}*`,
-            `💰 Amount: *${escMd(fmtPHP(pendingInfo.amountPHP))}*`,
-            `🔑 License: \`${escMd(pendingInfo.licenseKey || 'N/A')}\``,
+            `📦 Package: *${escMd(info.packageName)}*`,
+            `🎟 Credits: *${escMd(String(info.credits))}*`,
+            `💰 Amount: *${escMd(fmtPHP(info.amountPHP))}*`,
+            `🔑 License: \`${escMd(info.licenseKey || 'N/A')}\``,
             ``,
             `Credits have been added to your license\\. Thank you for your purchase\\! ✈️`,
           ].join('\n'),
           { parse_mode: 'MarkdownV2' }
         );
       } else {
-        await bot.sendMessage(userChatId,
+        await bot.sendMessage(info.chatId,
           [
             `❌ *Your purchase request has been DENIED\\.*`,
             ``,
-            `📦 Package: *${escMd(pendingInfo.packageName)}*`,
-            `💰 Amount: *${escMd(fmtPHP(pendingInfo.amountPHP))}*`,
+            `📦 Package: *${escMd(info.packageName)}*`,
+            `💰 Amount: *${escMd(fmtPHP(info.amountPHP))}*`,
             ``,
             `If you believe this is a mistake, please contact support\\.`,
           ].join('\n'),
           { parse_mode: 'MarkdownV2' }
         );
       }
-      pendingApprovals.delete(reqIdNum);
     }
+    pendingApprovals.delete(reqIdNum);
     return;
   }
 });

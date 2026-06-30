@@ -704,7 +704,7 @@ func dbListPurchaseRequests(status string) ([]PurchaseRequest, error) {
 		rows, err = db.Query(
 			`SELECT id, telegram_user_id, telegram_username, telegram_chat_id, package_id, package_name,
 			        credits, amount_php, license_key, status, admin_note, created_at, updated_at
-			 FROM purchase_requests ORDER BY created_at DESC LIMIT 100`)
+			 FROM purchase_requests ORDER BY created_at DESC LIMIT 100`) // cap at 100 for the unfiltered admin overview
 	}
 	if err != nil {
 		return nil, err

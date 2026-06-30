@@ -826,14 +826,14 @@ async function loadPackages() {
     tbody.innerHTML = list.map(p => {
       const status = p.active ? `<span class="badge-active">Active</span>` : `<span class="badge-inactive">Inactive</span>`;
       return `<tr>
-        <td>${p.id}</td>
+        <td>${escHtml(String(p.id))}</td>
         <td><b>${escHtml(p.name)}</b></td>
-        <td>${p.credits}</td>
-        <td>₱${Number(p.pricePHP).toFixed(2)}</td>
+        <td>${escHtml(String(p.credits))}</td>
+        <td>₱${escHtml(Number(p.pricePHP).toFixed(2))}</td>
         <td>${status}</td>
         <td style="display:flex;gap:6px;flex-wrap:wrap">
-          <button class="btn-sm btn-blue" onclick="openEditPackage(${JSON.stringify(p).replace(/"/g,'&quot;')})">Edit</button>
-          <button class="btn-sm btn-red" onclick="deletePackage(${p.id})">Delete</button>
+          <button class="btn-sm btn-blue" onclick="openEditPackage(${escHtml(String(p.id))})">Edit</button>
+          <button class="btn-sm btn-red" onclick="deletePackage(${escHtml(String(p.id))})">Delete</button>
         </td>
       </tr>`;
     }).join('');
@@ -850,14 +850,18 @@ function openCreatePackage() {
   openModal('packageModal');
 }
 
-function openEditPackage(p) {
-  document.getElementById('packageModalTitle').textContent = 'Edit Credit Package';
-  document.getElementById('editPackageId').value = p.id;
-  document.getElementById('pkgName').value = p.name;
-  document.getElementById('pkgCredits').value = p.credits;
-  document.getElementById('pkgPrice').value = p.pricePHP;
-  document.getElementById('pkgActive').value = p.active ? 'true' : 'false';
-  openModal('packageModal');
+function openEditPackage(id) {
+  apiFetch(`/api/admin/packages`).then(r => r.json()).then(list => {
+    const p = (list || []).find(x => x.id === id);
+    if (!p) { toast('Package not found', 'error'); return; }
+    document.getElementById('packageModalTitle').textContent = 'Edit Credit Package';
+    document.getElementById('editPackageId').value = p.id;
+    document.getElementById('pkgName').value = p.name;
+    document.getElementById('pkgCredits').value = p.credits;
+    document.getElementById('pkgPrice').value = p.pricePHP;
+    document.getElementById('pkgActive').value = p.active ? 'true' : 'false';
+    openModal('packageModal');
+  }).catch(() => toast('Failed to load package', 'error'));
 }
 
 async function savePackage() {
@@ -909,11 +913,11 @@ async function loadPurchases(status) {
                           p.status === 'denied'   ? `<span class="badge-inactive">Denied</span>` :
                           `<span class="badge-susp">Pending</span>`;
       return `<tr>
-        <td>${p.id}</td>
+        <td>${escHtml(String(p.id))}</td>
         <td style="font-size:12px">@${escHtml(p.username||'')} <span style="color:var(--muted)">(${escHtml(p.telegramUserId)})</span></td>
         <td>${escHtml(p.packageName)}</td>
-        <td>${p.credits}</td>
-        <td>₱${Number(p.amountPHP).toFixed(2)}</td>
+        <td>${escHtml(String(p.credits))}</td>
+        <td>₱${escHtml(Number(p.amountPHP).toFixed(2))}</td>
         <td style="font-family:monospace;font-size:11px">${escHtml(p.licenseKey||'—')}</td>
         <td>${statusBadge}</td>
         <td style="font-size:11px">${new Date(p.createdAt).toLocaleString()}</td>

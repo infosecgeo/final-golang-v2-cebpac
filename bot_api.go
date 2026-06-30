@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -135,8 +136,43 @@ func botAPIRouter(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
 		}
+		// Fetch updated record to return current state
+		updated, err := dbGetPurchaseRequest(id)
+		if err != nil || updated == nil {
+			updated = pr
+			updated.Status = req.Status
+			updated.AdminNote = req.AdminNote
+		}
 		logSuccess(fmt.Sprintf("Purchase request %d marked %s", id, req.Status))
-		writeJSON(w, 200, map[string]interface{}{"ok": true, "request": pr})
+		writeJSON(w, 200, map[string]interface{}{"ok": true, "request": updated})
+
+	// ── Add credits via bot key (for /addcredits bot command) ─────────────────
+	case strings.HasPrefix(path, "/licenses/") && strings.HasSuffix(path, "/credits") && r.Method == http.MethodPost:
+		keyStr := strings.TrimSuffix(strings.TrimPrefix(path, "/licenses/"), "/credits")
+		if keyStr == "" {
+			writeJSON(w, 400, map[string]string{"error": "license key required"})
+			return
+		}
+		var req struct {
+			Delta  int    `json:"delta"`
+			Reason string `json:"reason"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, 400, map[string]string{"error": "invalid body"})
+			return
+		}
+		lic, err := dbGetLicenseByKey(keyStr)
+		if err != nil || lic == nil {
+			writeJSON(w, 404, map[string]string{"error": "license not found"})
+			return
+		}
+		newBal, err := dbAdjustCredits(lic.ID, req.Delta, req.Reason)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		logSuccess(fmt.Sprintf("Bot: credits adjusted for license %s: delta=%d, new balance=%d", keyStr, req.Delta, newBal))
+		writeJSON(w, 200, map[string]int{"balance": newBal})
 
 	default:
 		http.NotFound(w, r)
@@ -260,6 +296,16 @@ func triggerBotWebhook(eventType string, payload interface{}) {
 	if webhookURL == "" {
 		return
 	}
+	// Validate URL scheme to prevent SSRF.
+	if !strings.HasPrefix(webhookURL, "http://") && !strings.HasPrefix(webhookURL, "https://") {
+		logWarn("triggerBotWebhook: bot_webhook_url must start with http:// or https://")
+		return
+	}
+	// Reject requests to private/loopback IP ranges to prevent SSRF.
+	if isPrivateWebhookURL(webhookURL) {
+		logWarn("triggerBotWebhook: bot_webhook_url must not point to a private or loopback address")
+		return
+	}
 	body, err := json.Marshal(map[string]interface{}{
 		"type":    eventType,
 		"payload": payload,
@@ -285,6 +331,57 @@ func triggerBotWebhook(eventType string, payload interface{}) {
 		return
 	}
 	defer resp.Body.Close()
+}
+
+// isPrivateWebhookURL returns true if the URL's hostname resolves to a
+// loopback or private IP range, preventing SSRF via admin-controlled config.
+func isPrivateWebhookURL(rawURL string) bool {
+	// Parse just the host out of the URL
+	hostStart := strings.Index(rawURL, "://")
+	if hostStart < 0 {
+		return true // malformed
+	}
+	host := rawURL[hostStart+3:]
+	if idx := strings.IndexAny(host, "/?#"); idx >= 0 {
+		host = host[:idx]
+	}
+	// Strip port
+	if idx := strings.LastIndex(host, ":"); idx >= 0 && idx > strings.LastIndex(host, "]") {
+		host = host[:idx]
+	}
+	host = strings.Trim(host, "[]") // unwrap IPv6 brackets
+
+	// Reject obvious loopback/private hostnames
+	lower := strings.ToLower(host)
+	if lower == "localhost" || strings.HasSuffix(lower, ".local") || strings.HasSuffix(lower, ".internal") {
+		return true
+	}
+
+	// Parse as IP
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false // hostname; allow (DNS resolution is out of scope here)
+	}
+	privateRanges := []string{
+		"127.0.0.0/8",    // loopback
+		"::1/128",        // IPv6 loopback
+		"10.0.0.0/8",     // RFC1918
+		"172.16.0.0/12",  // RFC1918
+		"192.168.0.0/16", // RFC1918
+		"169.254.0.0/16", // link-local
+		"fc00::/7",       // IPv6 unique-local
+		"fe80::/10",      // IPv6 link-local
+	}
+	for _, cidr := range privateRanges {
+		_, network, err := net.ParseCIDR(cidr)
+		if err != nil {
+			continue
+		}
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 func triggerPriceUpdateBroadcast() {
