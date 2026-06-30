@@ -31,7 +31,7 @@ func fetchItinerary(xAuthToken, bearerToken, userAgent string) (*ItineraryData, 
 	req.Header.Set("Referer", "https://www.cebupacificair.com")
 	req.Header.Set("Origin", "https://www.cebupacificair.com")
 	req.Header.Set("Accept", "application/json, text/plain, */*")
-	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("User-Agent", resolveUA(userAgent))
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 
 	stdCl := newStdClient()

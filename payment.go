@@ -293,8 +293,7 @@ func processManualPayment(
 	}
 	// ── C: POST to web.php ───────────────────────────────────────────────────
 	stdClient := newStdClient()
-	webCode, webBody, _, err := doFormPost(stdClient, "https://pop.cellpointdigital.net/views/web.php",
-		ua,
+	webCode, webBody, _, err := doFormPost(stdClient, "https://pop.cellpointdigital.net/views/web.php", ua,
 		map[string]string{
 			"cache-control": "max-age=0",
 			"origin":        baseURL,
