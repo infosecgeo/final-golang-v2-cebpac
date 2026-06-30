@@ -115,6 +115,7 @@ return
 // ── Credit check ─────────────────────────────────────────────────────────
 c := getCtxClaims(r)
 var licenseID *int64
+var licKey string
 if c != nil && c.Role == roleUser && c.LicenseID > 0 {
 id := c.LicenseID
 licenseID = &id
@@ -135,6 +136,7 @@ if lic.Credits <= 0 {
 enc.Encode(payResp{Success: false, Message: "INSUFFICIENT_CREDITS"})
 return
 }
+licKey = lic.Key
 }
 
 if err := r.ParseMultipartForm(10 << 20); err != nil {
@@ -266,6 +268,34 @@ if ok {
 result = "success"
 }
 dbLogTransaction(licenseID, cardMasked, result, rl, pn, msg)
+
+// Push payment event to bot via webhook (app → Telegram, no JWT required).
+if licenseID != nil {
+	userChatID := dbGetChatIDForLicense(*licenseID)
+	if ok {
+		go triggerBotWebhook("payment_success", map[string]interface{}{
+			"recordLocator":    resp.RecordLocator,
+			"passengerName":    resp.PassengerName,
+			"flightRoute":      resp.FlightRoute,
+			"flightNumber":     resp.FlightNumber,
+			"bookingStatus":    resp.BookingStatus,
+			"paymentStatus":    resp.PaymentStatus,
+			"maskedCard":       cardMasked,
+			"licenseKey":       licKey,
+			"creditsRemaining": resp.Credits,
+			"authTime":         resp.AuthTime,
+			"userChatId":       userChatID,
+		})
+	} else {
+		go triggerBotWebhook("payment_failure", map[string]interface{}{
+			"maskedCard": cardMasked,
+			"reason":     msg,
+			"time":       time.Now().UTC().Format(time.RFC3339),
+			"licenseKey": licKey,
+			"userChatId": userChatID,
+		})
+	}
+}
 
 enc.Encode(resp)
 }

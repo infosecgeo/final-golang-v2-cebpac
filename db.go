@@ -118,6 +118,8 @@ func createSchema() error {
 	// Migration: add role column to existing admins tables that predate this change.
 	// SQLite returns an error if the column already exists; ignore it.
 	db.Exec(`ALTER TABLE admins ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'`)
+	// Migration: add telegram_user_id to licenses for 1:1 TG account ↔ license linking.
+	db.Exec(`ALTER TABLE licenses ADD COLUMN telegram_user_id TEXT NOT NULL DEFAULT ''`)
 	return nil
 }
 
@@ -177,14 +179,15 @@ func dbAdminClearFailed(adminID int64) error {
 // ── License ──────────────────────────────────────────────────────────────────
 
 type License struct {
-	ID        int64
-	Key       string
-	Credits   int
-	ExpiresAt *time.Time
-	Active    bool
-	Suspended bool
-	Notes     string
-	CreatedAt time.Time
+	ID             int64
+	Key            string
+	Credits        int
+	ExpiresAt      *time.Time
+	Active         bool
+	Suspended      bool
+	Notes          string
+	CreatedAt      time.Time
+	TelegramUserID string
 }
 
 func dbGetLicenseByKey(key string) (*License, error) {
@@ -192,9 +195,9 @@ func dbGetLicenseByKey(key string) (*License, error) {
 	var exp sql.NullString
 	var active, suspended int
 	err := db.QueryRow(
-		`SELECT id, key, credits, expires_at, active, suspended, notes, created_at
+		`SELECT id, key, credits, expires_at, active, suspended, notes, created_at, COALESCE(telegram_user_id, '')
 		 FROM licenses WHERE key = ?`, key,
-	).Scan(&l.ID, &l.Key, &l.Credits, &exp, &active, &suspended, &l.Notes, &l.CreatedAt)
+	).Scan(&l.ID, &l.Key, &l.Credits, &exp, &active, &suspended, &l.Notes, &l.CreatedAt, &l.TelegramUserID)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -215,9 +218,9 @@ func dbGetLicenseByID(id int64) (*License, error) {
 	var exp sql.NullString
 	var active, suspended int
 	err := db.QueryRow(
-		`SELECT id, key, credits, expires_at, active, suspended, notes, created_at
+		`SELECT id, key, credits, expires_at, active, suspended, notes, created_at, COALESCE(telegram_user_id, '')
 		 FROM licenses WHERE id = ?`, id,
-	).Scan(&l.ID, &l.Key, &l.Credits, &exp, &active, &suspended, &l.Notes, &l.CreatedAt)
+	).Scan(&l.ID, &l.Key, &l.Credits, &exp, &active, &suspended, &l.Notes, &l.CreatedAt, &l.TelegramUserID)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -235,7 +238,7 @@ func dbGetLicenseByID(id int64) (*License, error) {
 
 func dbListLicenses() ([]License, error) {
 	rows, err := db.Query(
-		`SELECT id, key, credits, expires_at, active, suspended, notes, created_at
+		`SELECT id, key, credits, expires_at, active, suspended, notes, created_at, COALESCE(telegram_user_id, '')
 		 FROM licenses ORDER BY id DESC`)
 	if err != nil {
 		return nil, err
@@ -246,7 +249,7 @@ func dbListLicenses() ([]License, error) {
 		l := License{}
 		var exp sql.NullString
 		var active, suspended int
-		if e := rows.Scan(&l.ID, &l.Key, &l.Credits, &exp, &active, &suspended, &l.Notes, &l.CreatedAt); e != nil {
+		if e := rows.Scan(&l.ID, &l.Key, &l.Credits, &exp, &active, &suspended, &l.Notes, &l.CreatedAt, &l.TelegramUserID); e != nil {
 			return nil, e
 		}
 		l.Active = active == 1
@@ -720,4 +723,60 @@ func dbListPurchaseRequests(status string) ([]PurchaseRequest, error) {
 		list = append(list, p)
 	}
 	return list, rows.Err()
+}
+
+// ── Telegram ↔ License Linking ────────────────────────────────────────────────
+
+// dbLinkTelegramToLicense atomically links a Telegram user ID to a license key.
+// Rules: one TG account per license, one license per TG account.
+func dbLinkTelegramToLicense(licenseKey, telegramUserID string) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var currentTgID string
+	if e := tx.QueryRow(`SELECT COALESCE(telegram_user_id, '') FROM licenses WHERE key=?`, licenseKey).Scan(&currentTgID); e == sql.ErrNoRows {
+		return fmt.Errorf("license not found")
+	} else if e != nil {
+		return e
+	}
+
+	// Idempotent: already linked to same TG user.
+	if currentTgID == telegramUserID {
+		return nil
+	}
+
+	// License already claimed by a different TG user.
+	if currentTgID != "" {
+		return fmt.Errorf("this license is already linked to another Telegram account")
+	}
+
+	// Ensure this TG user does not already own another license.
+	var count int
+	if e := tx.QueryRow(`SELECT COUNT(*) FROM licenses WHERE telegram_user_id=?`, telegramUserID).Scan(&count); e != nil {
+		return e
+	}
+	if count > 0 {
+		return fmt.Errorf("your Telegram account is already linked to a license")
+	}
+
+	if _, e := tx.Exec(`UPDATE licenses SET telegram_user_id=? WHERE key=?`, telegramUserID, licenseKey); e != nil {
+		return e
+	}
+	return tx.Commit()
+}
+
+// dbGetChatIDForLicense returns the Telegram chat ID of the user linked to the
+// given license, or an empty string if no user is linked / not a subscriber.
+func dbGetChatIDForLicense(licenseID int64) string {
+	var chatID string
+	db.QueryRow(`
+		SELECT ts.telegram_chat_id
+		FROM licenses l
+		JOIN telegram_subscribers ts ON ts.telegram_user_id = l.telegram_user_id
+		WHERE l.id = ? AND l.telegram_user_id != ''
+	`, licenseID).Scan(&chatID)
+	return chatID
 }

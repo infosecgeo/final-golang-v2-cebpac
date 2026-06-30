@@ -177,6 +177,42 @@ func botAPIRouter(w http.ResponseWriter, r *http.Request) {
 		logSuccess(fmt.Sprintf("Bot: credits adjusted for license %s: delta=%d, new balance=%d", keyStr, req.Delta, newBal))
 		writeJSON(w, 200, map[string]int{"balance": newBal})
 
+	// ── Link Telegram user to license (/register bot command) ─────────────────
+	case path == "/licenses/link" && r.Method == http.MethodPost:
+		var req struct {
+			TelegramUserID string `json:"telegramUserId"`
+			LicenseKey     string `json:"licenseKey"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, 400, map[string]string{"error": "invalid body"})
+			return
+		}
+		req.TelegramUserID = strings.TrimSpace(req.TelegramUserID)
+		req.LicenseKey = strings.TrimSpace(req.LicenseKey)
+		if req.TelegramUserID == "" || req.LicenseKey == "" {
+			writeJSON(w, 400, map[string]string{"error": "telegramUserId and licenseKey required"})
+			return
+		}
+		lic, err := dbGetLicenseByKey(req.LicenseKey)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		if lic == nil {
+			writeJSON(w, 404, map[string]string{"error": "license not found"})
+			return
+		}
+		if !lic.Active || lic.Suspended {
+			writeJSON(w, 400, map[string]string{"error": "license is inactive or suspended"})
+			return
+		}
+		if err := dbLinkTelegramToLicense(req.LicenseKey, req.TelegramUserID); err != nil {
+			writeJSON(w, 400, map[string]string{"error": err.Error()})
+			return
+		}
+		logSuccess(fmt.Sprintf("Telegram user %s linked to license %s", req.TelegramUserID, req.LicenseKey))
+		writeJSON(w, 200, map[string]bool{"ok": true})
+
 	default:
 		http.NotFound(w, r)
 	}

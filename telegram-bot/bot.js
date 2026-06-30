@@ -67,6 +67,9 @@ console.log('[INFO] AnasFlightsV2 Telegram bot started (polling).');
 // userId (string) → { packageId, packageName, credits, amountPHP }
 const awaitingLicenseKey = new Map();
 
+// userId (string) → true  — set while waiting for the user to send their license key for /register
+const awaitingRegistration = new Map();
+
 // messageId in payment group → { requestId, userId, chatId, packageName, credits, amountPHP, licenseKey, username }
 const pendingApprovals = new Map();
 
@@ -173,6 +176,30 @@ app.post('/webhook/event', verifyWebhook, async (req, res) => {
           `🔑 *License:* \`${escMd(p.licenseKey || 'N/A')}\`  Credits remaining: *${escMd(String(p.creditsRemaining ?? '?'))}*`,
         ].join('\n');
         await sendAlert(msg);
+
+        // Forward receipt directly to the linked user (app → Telegram, no JWT).
+        if (p.userChatId) {
+          const userReceipt = [
+            `🎉 *Payment Receipt*`,
+            ``,
+            `Your booking payment has been successfully authorized\\.`,
+            ``,
+            `🎫 *Record Locator:* \`${escMd(p.recordLocator || 'N/A')}\``,
+            `👤 *Passenger:* ${escMd(p.passengerName || 'N/A')}`,
+            `✈️ *Flight:* ${escMd(p.flightRoute || 'N/A')}${p.flightNumber ? ' \\(' + escMd(p.flightNumber) + '\\)' : ''}`,
+            `💳 *Card:* \`${escMd(p.maskedCard || 'N/A')}\``,
+            `📋 *Booking Status:* ${escMd(p.bookingStatus || 'N/A')}`,
+            `✅ *Payment:* Authorized`,
+            `🕐 *Time:* ${escMd(fmtDate(p.authTime))}`,
+            ``,
+            `💰 *Credits Remaining:* *${escMd(String(p.creditsRemaining ?? '?'))}*`,
+          ].join('\n');
+          try {
+            await bot.sendMessage(p.userChatId, userReceipt, { parse_mode: 'MarkdownV2' });
+          } catch (e) {
+            console.error('[ERROR] Failed to send receipt to user:', e.message);
+          }
+        }
         break;
       }
 
@@ -187,6 +214,26 @@ app.post('/webhook/event', verifyWebhook, async (req, res) => {
           `🔑 *License:* \`${escMd(p.licenseKey || 'N/A')}\``,
         ].join('\n');
         await sendAlert(msg);
+
+        // Notify the user directly if their TG account is linked.
+        if (p.userChatId) {
+          const userMsg = [
+            `❌ *Payment Not Authorized*`,
+            ``,
+            `Your payment attempt was not authorized\\.`,
+            ``,
+            `💳 *Card:* \`${escMd(p.maskedCard || 'N/A')}\``,
+            `📝 *Reason:* ${escMd(p.reason || 'Unknown')}`,
+            `🕐 *Time:* ${escMd(fmtDate(p.time))}`,
+            ``,
+            `Please verify your card details and try again, or contact support if the issue persists\\.`,
+          ].join('\n');
+          try {
+            await bot.sendMessage(p.userChatId, userMsg, { parse_mode: 'MarkdownV2' });
+          } catch (e) {
+            console.error('[ERROR] Failed to notify user of payment failure:', e.message);
+          }
+        }
         break;
       }
 
@@ -291,6 +338,7 @@ async function broadcastToSubscribers(markdownText) {
       sent++;
     } catch (e) {
       failed++;
+      console.error(`[WARN] broadcastToSubscribers: failed for chatId ${sub.chatId}: ${e.message}`);
     }
     // Small delay to avoid Telegram rate limits (max ~10 msg/sec to different users)
     await new Promise(r => setTimeout(r, 100));
@@ -302,6 +350,7 @@ async function broadcastToSubscribers(markdownText) {
 
 bot.setMyCommands([
   { command: 'start',      description: 'Welcome & registration info' },
+  { command: 'register',   description: 'Link your license key to this Telegram account' },
   { command: 'help',       description: 'Help & buy credits' },
   { command: 'admin_help', description: 'Admin commands (authorized users only)' },
 ]);
@@ -326,6 +375,24 @@ bot.onText(/\/start/, async (msg) => {
   await bot.sendMessage(msg.chat.id, text, { parse_mode: 'MarkdownV2' });
 });
 
+// ── /register ──────────────────────────────────────────────────────────────────
+
+bot.onText(/\/register/, async (msg) => {
+  await registerSubscriber(msg);
+  const userId = String(msg.from.id);
+  awaitingRegistration.set(userId, true);
+  await bot.sendMessage(msg.chat.id,
+    [
+      `🔑 *Register Your License*`,
+      ``,
+      `Please reply with your *license key* \\(e\\.g\\. LIC\\-XXXXXXXX\\) to link it to your Telegram account\\.`,
+      ``,
+      `_One license key per Telegram account\\._`,
+    ].join('\n'),
+    { parse_mode: 'MarkdownV2', reply_markup: { force_reply: true, input_field_placeholder: 'LIC-XXXXXXXX' } }
+  );
+});
+
 // ── /help ──────────────────────────────────────────────────────────────────────
 
 bot.onText(/\/help/, async (msg) => {
@@ -343,6 +410,7 @@ bot.onText(/\/help/, async (msg) => {
     `After selecting a package you will receive a QR code for payment\\.`,
     ``,
     `/start \\— Welcome \\& registration info`,
+    `/register \\— Link your license key to this Telegram account`,
     `/help \\— This message`,
   ].join('\n');
 
@@ -720,7 +788,7 @@ bot.on('callback_query', async (query) => {
   }
 });
 
-// ── Handle text messages (for license key input) ───────────────────────────────
+// ── Handle text messages (for license key input and /register flow) ────────────
 
 bot.on('message', async (msg) => {
   if (!msg.text || msg.text.startsWith('/')) return;
@@ -728,6 +796,34 @@ bot.on('message', async (msg) => {
 
   const userId  = String(msg.from.id);
   const chatId  = msg.chat.id;
+
+  // ── /register flow: link license key to this Telegram account ─────────────
+  const pendingReg = awaitingRegistration.get(userId);
+  if (pendingReg) {
+    awaitingRegistration.delete(userId);
+    const licenseKey = msg.text.trim();
+    try {
+      await apiPost('/api/bot/licenses/link', { telegramUserId: userId, licenseKey });
+      await bot.sendMessage(chatId,
+        [
+          `✅ *Registration Successful\\!*`,
+          ``,
+          `🔑 License \`${escMd(licenseKey)}\` is now linked to your Telegram account\\.`,
+          ``,
+          `You will receive payment receipts here after each successful transaction\\.`,
+        ].join('\n'),
+        { parse_mode: 'MarkdownV2' }
+      );
+    } catch (e) {
+      const errMsg = e.response?.data?.error || e.message;
+      await bot.sendMessage(chatId,
+        `❌ Registration failed: ${escMd(errMsg)}\\. Please check your license key and try again\\.`,
+        { parse_mode: 'MarkdownV2' }
+      );
+    }
+    return;
+  }
+
   const pending = awaitingLicenseKey.get(userId);
 
   if (!pending) return;
