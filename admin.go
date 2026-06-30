@@ -91,12 +91,7 @@ func adminRouter(w http.ResponseWriter, r *http.Request) {
 	case path == "/broadcast-online" && r.Method == http.MethodPost:
 		adminBroadcastOnline(w, r)
 	case path == "/broadcast-prices" && r.Method == http.MethodPost:
-		list, err := dbListPackages(true)
-		if err != nil {
-			writeJSON(w, 500, map[string]string{"error": err.Error()})
-			return
-		}
-		go triggerBotWebhook("price_update", list)
+		go triggerPriceUpdateBroadcast()
 		writeJSON(w, 200, map[string]bool{"ok": true})
 
 	// Admin user management
