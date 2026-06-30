@@ -267,6 +267,27 @@ result = "success"
 }
 dbLogTransaction(licenseID, cardMasked, result, rl, pn, msg)
 
+// Send payment receipt to linked Telegram user on success.
+if ok && licenseID != nil && itin != nil {
+go func(lid int64) {
+lic, err := dbGetLicenseByID(lid)
+if err != nil || lic == nil || lic.TelegramChatID == "" {
+return
+}
+sendPaymentReceipt(
+lic,
+itin.RecordLocator,
+itin.PassengerName,
+itin.FlightRoute,
+itin.FlightNumber,
+itin.BookingStatus,
+cardMasked,
+resp.Credits,
+resp.AuthTime,
+)
+}(*licenseID)
+}
+
 enc.Encode(resp)
 }
 

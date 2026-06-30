@@ -44,6 +44,8 @@ func createSchema() error {
 			active INTEGER DEFAULT 1,
 			suspended INTEGER DEFAULT 0,
 			notes TEXT DEFAULT '',
+			telegram_user_id TEXT DEFAULT '',
+			telegram_chat_id TEXT DEFAULT '',
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE TABLE IF NOT EXISTS sessions (
@@ -118,6 +120,9 @@ func createSchema() error {
 	// Migration: add role column to existing admins tables that predate this change.
 	// SQLite returns an error if the column already exists; ignore it.
 	db.Exec(`ALTER TABLE admins ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'`)
+	// Migration: add telegram link columns to licenses tables that predate this change.
+	db.Exec(`ALTER TABLE licenses ADD COLUMN telegram_user_id TEXT DEFAULT ''`)
+	db.Exec(`ALTER TABLE licenses ADD COLUMN telegram_chat_id TEXT DEFAULT ''`)
 	return nil
 }
 
@@ -177,24 +182,27 @@ func dbAdminClearFailed(adminID int64) error {
 // ── License ──────────────────────────────────────────────────────────────────
 
 type License struct {
-	ID        int64
-	Key       string
-	Credits   int
-	ExpiresAt *time.Time
-	Active    bool
-	Suspended bool
-	Notes     string
-	CreatedAt time.Time
+	ID              int64
+	Key             string
+	Credits         int
+	ExpiresAt       *time.Time
+	Active          bool
+	Suspended       bool
+	Notes           string
+	TelegramUserID  string
+	TelegramChatID  string
+	CreatedAt       time.Time
 }
 
 func dbGetLicenseByKey(key string) (*License, error) {
 	l := &License{}
 	var exp sql.NullString
 	var active, suspended int
+	var tgUserID, tgChatID sql.NullString
 	err := db.QueryRow(
-		`SELECT id, key, credits, expires_at, active, suspended, notes, created_at
+		`SELECT id, key, credits, expires_at, active, suspended, notes, telegram_user_id, telegram_chat_id, created_at
 		 FROM licenses WHERE key = ?`, key,
-	).Scan(&l.ID, &l.Key, &l.Credits, &exp, &active, &suspended, &l.Notes, &l.CreatedAt)
+	).Scan(&l.ID, &l.Key, &l.Credits, &exp, &active, &suspended, &l.Notes, &tgUserID, &tgChatID, &l.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -207,6 +215,8 @@ func dbGetLicenseByKey(key string) (*License, error) {
 		t, _ := time.Parse(time.RFC3339, exp.String)
 		l.ExpiresAt = &t
 	}
+	l.TelegramUserID = tgUserID.String
+	l.TelegramChatID = tgChatID.String
 	return l, nil
 }
 
@@ -214,10 +224,11 @@ func dbGetLicenseByID(id int64) (*License, error) {
 	l := &License{}
 	var exp sql.NullString
 	var active, suspended int
+	var tgUserID, tgChatID sql.NullString
 	err := db.QueryRow(
-		`SELECT id, key, credits, expires_at, active, suspended, notes, created_at
+		`SELECT id, key, credits, expires_at, active, suspended, notes, telegram_user_id, telegram_chat_id, created_at
 		 FROM licenses WHERE id = ?`, id,
-	).Scan(&l.ID, &l.Key, &l.Credits, &exp, &active, &suspended, &l.Notes, &l.CreatedAt)
+	).Scan(&l.ID, &l.Key, &l.Credits, &exp, &active, &suspended, &l.Notes, &tgUserID, &tgChatID, &l.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -230,12 +241,14 @@ func dbGetLicenseByID(id int64) (*License, error) {
 		t, _ := time.Parse(time.RFC3339, exp.String)
 		l.ExpiresAt = &t
 	}
+	l.TelegramUserID = tgUserID.String
+	l.TelegramChatID = tgChatID.String
 	return l, nil
 }
 
 func dbListLicenses() ([]License, error) {
 	rows, err := db.Query(
-		`SELECT id, key, credits, expires_at, active, suspended, notes, created_at
+		`SELECT id, key, credits, expires_at, active, suspended, notes, telegram_user_id, telegram_chat_id, created_at
 		 FROM licenses ORDER BY id DESC`)
 	if err != nil {
 		return nil, err
@@ -246,7 +259,8 @@ func dbListLicenses() ([]License, error) {
 		l := License{}
 		var exp sql.NullString
 		var active, suspended int
-		if e := rows.Scan(&l.ID, &l.Key, &l.Credits, &exp, &active, &suspended, &l.Notes, &l.CreatedAt); e != nil {
+		var tgUserID, tgChatID sql.NullString
+		if e := rows.Scan(&l.ID, &l.Key, &l.Credits, &exp, &active, &suspended, &l.Notes, &tgUserID, &tgChatID, &l.CreatedAt); e != nil {
 			return nil, e
 		}
 		l.Active = active == 1
@@ -255,6 +269,8 @@ func dbListLicenses() ([]License, error) {
 			t, _ := time.Parse(time.RFC3339, exp.String)
 			l.ExpiresAt = &t
 		}
+		l.TelegramUserID = tgUserID.String
+		l.TelegramChatID = tgChatID.String
 		list = append(list, l)
 	}
 	return list, rows.Err()
@@ -720,4 +736,74 @@ func dbListPurchaseRequests(status string) ([]PurchaseRequest, error) {
 		list = append(list, p)
 	}
 	return list, rows.Err()
+}
+
+// ── Telegram license linking ───────────────────────────────────────────────────
+
+// dbLinkTelegramToLicense links a Telegram user to a license key.
+// It enforces 1-to-1: a TG user may only link one license, and a license
+// may only be linked to one TG user.
+func dbLinkTelegramToLicense(licenseKey, telegramUserID, chatID string) error {
+	// Check the TG user is not already linked to a different license.
+	existing := &License{}
+	var existID int64
+	err := db.QueryRow(
+		`SELECT id FROM licenses WHERE telegram_user_id = ? AND key != ?`,
+		telegramUserID, licenseKey,
+	).Scan(&existID)
+	if err == nil {
+		return fmt.Errorf("your Telegram account is already linked to another license")
+	}
+	if err != sql.ErrNoRows {
+		return err
+	}
+	_ = existing
+
+	// Check the license is not already linked to a different TG user.
+	var existTG string
+	err = db.QueryRow(
+		`SELECT telegram_user_id FROM licenses WHERE key = ?`, licenseKey,
+	).Scan(&existTG)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("license not found")
+	}
+	if err != nil {
+		return err
+	}
+	if existTG != "" && existTG != telegramUserID {
+		return fmt.Errorf("this license is already linked to another Telegram account")
+	}
+
+	_, err = db.Exec(
+		`UPDATE licenses SET telegram_user_id = ?, telegram_chat_id = ? WHERE key = ?`,
+		telegramUserID, chatID, licenseKey,
+	)
+	return err
+}
+
+// dbGetLicenseByTelegramUserID retrieves the license linked to a Telegram user ID.
+func dbGetLicenseByTelegramUserID(telegramUserID string) (*License, error) {
+	l := &License{}
+	var exp sql.NullString
+	var active, suspended int
+	var tgUserID, tgChatID sql.NullString
+	err := db.QueryRow(
+		`SELECT id, key, credits, expires_at, active, suspended, notes, telegram_user_id, telegram_chat_id, created_at
+		 FROM licenses WHERE telegram_user_id = ?`, telegramUserID,
+	).Scan(&l.ID, &l.Key, &l.Credits, &exp, &active, &suspended, &l.Notes, &tgUserID, &tgChatID, &l.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	l.Active = active == 1
+	l.Suspended = suspended == 1
+	if exp.Valid {
+		t, _ := time.Parse(time.RFC3339, exp.String)
+		l.ExpiresAt = &t
+	}
+	l.TelegramUserID = tgUserID.String
+	l.TelegramChatID = tgChatID.String
+	return l, nil
 }

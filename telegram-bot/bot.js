@@ -280,7 +280,7 @@ async function broadcastToSubscribers(markdownText) {
   try {
     subscribers = await apiGet('/api/bot/subscribers');
   } catch (e) {
-    console.error('[ERROR] broadcastToSubscribers fetch:', e.message);
+    console.error('[ERROR] broadcastToSubscribers fetch subscribers:', e.response ? `HTTP ${e.response.status}: ${JSON.stringify(e.response.data)}` : e.message);
     return;
   }
   if (!Array.isArray(subscribers) || subscribers.length === 0) return;
@@ -291,6 +291,7 @@ async function broadcastToSubscribers(markdownText) {
       sent++;
     } catch (e) {
       failed++;
+      console.error(`[ERROR] broadcastToSubscribers send to ${sub.chatId}:`, e.message);
     }
     // Small delay to avoid Telegram rate limits (max ~10 msg/sec to different users)
     await new Promise(r => setTimeout(r, 100));
@@ -302,6 +303,7 @@ async function broadcastToSubscribers(markdownText) {
 
 bot.setMyCommands([
   { command: 'start',      description: 'Welcome & registration info' },
+  { command: 'register',   description: 'Link your Telegram account to a license key' },
   { command: 'help',       description: 'Help & buy credits' },
   { command: 'admin_help', description: 'Admin commands (authorized users only)' },
 ]);
@@ -326,7 +328,60 @@ bot.onText(/\/start/, async (msg) => {
   await bot.sendMessage(msg.chat.id, text, { parse_mode: 'MarkdownV2' });
 });
 
-// ── /help ──────────────────────────────────────────────────────────────────────
+// ── /register ──────────────────────────────────────────────────────────────────
+
+bot.onText(/\/register(?:\s+(.+))?/, async (msg, match) => {
+  await registerSubscriber(msg);
+  const chatId  = msg.chat.id;
+  const userId  = String(msg.from.id);
+  const username = msg.from.username || msg.from.first_name || '';
+  const licenseKey = (match[1] || '').trim();
+
+  if (!licenseKey) {
+    await bot.sendMessage(chatId,
+      [
+        `🔑 *Register Your License Key*`,
+        ``,
+        `Link your Telegram account to a license key so you can receive booking receipts and notifications directly here\\.`,
+        ``,
+        `Usage: /register LIC\\-XXXXXXXX`,
+        ``,
+        `_1 Telegram account per license key\\._`,
+      ].join('\n'),
+      { parse_mode: 'MarkdownV2' }
+    );
+    return;
+  }
+
+  try {
+    await apiPost('/api/bot/licenses/register', {
+      licenseKey,
+      telegramUserId: userId,
+      chatId: String(chatId),
+      username,
+    });
+    await bot.sendMessage(chatId,
+      [
+        `✅ *Registration Successful\\!*`,
+        ``,
+        `🔑 License \`${escMd(licenseKey)}\` is now linked to your Telegram account\\.`,
+        ``,
+        `You will receive booking receipts and notifications here automatically\\.`,
+      ].join('\n'),
+      { parse_mode: 'MarkdownV2' }
+    );
+  } catch (e) {
+    const errMsg = e.response && e.response.data && e.response.data.error
+      ? e.response.data.error
+      : e.message;
+    await bot.sendMessage(chatId,
+      `❌ *Registration failed:* ${escMd(errMsg)}`,
+      { parse_mode: 'MarkdownV2' }
+    );
+  }
+});
+
+
 
 bot.onText(/\/help/, async (msg) => {
   await registerSubscriber(msg);
@@ -343,6 +398,7 @@ bot.onText(/\/help/, async (msg) => {
     `After selecting a package you will receive a QR code for payment\\.`,
     ``,
     `/start \\— Welcome \\& registration info`,
+    `/register \\<LIC\\-KEY\\> \\— Link your license to receive receipts here`,
     `/help \\— This message`,
   ].join('\n');
 

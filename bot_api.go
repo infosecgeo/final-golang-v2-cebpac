@@ -177,6 +177,49 @@ func botAPIRouter(w http.ResponseWriter, r *http.Request) {
 		logSuccess(fmt.Sprintf("Bot: credits adjusted for license %s: delta=%d, new balance=%d", keyStr, req.Delta, newBal))
 		writeJSON(w, 200, map[string]int{"balance": newBal})
 
+	// ── Link Telegram account to license (/register command) ─────────────────
+	case path == "/licenses/register" && r.Method == http.MethodPost:
+		var req struct {
+			LicenseKey     string `json:"licenseKey"`
+			TelegramUserID string `json:"telegramUserId"`
+			ChatID         string `json:"chatId"`
+			Username       string `json:"username"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, 400, map[string]string{"error": "invalid body"})
+			return
+		}
+		req.LicenseKey = strings.TrimSpace(req.LicenseKey)
+		if req.LicenseKey == "" || req.TelegramUserID == "" || req.ChatID == "" {
+			writeJSON(w, 400, map[string]string{"error": "licenseKey, telegramUserId and chatId required"})
+			return
+		}
+		lic, err := dbGetLicenseByKey(req.LicenseKey)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		if lic == nil {
+			writeJSON(w, 404, map[string]string{"error": "license not found"})
+			return
+		}
+		if !lic.Active {
+			writeJSON(w, 403, map[string]string{"error": "license is inactive"})
+			return
+		}
+		if lic.Suspended {
+			writeJSON(w, 403, map[string]string{"error": "license is suspended"})
+			return
+		}
+		if err := dbLinkTelegramToLicense(req.LicenseKey, req.TelegramUserID, req.ChatID); err != nil {
+			writeJSON(w, 409, map[string]string{"error": err.Error()})
+			return
+		}
+		// Also upsert the user as a subscriber so they receive broadcasts.
+		_ = dbUpsertSubscriber(req.TelegramUserID, req.Username, req.ChatID)
+		logSuccess(fmt.Sprintf("Telegram user %s linked to license %s", req.TelegramUserID, req.LicenseKey))
+		writeJSON(w, 200, map[string]interface{}{"ok": true, "licenseKey": req.LicenseKey})
+
 	default:
 		http.NotFound(w, r)
 	}
@@ -275,7 +318,19 @@ func adminDeletePackage(w http.ResponseWriter, r *http.Request, id int64) {
 }
 
 func adminBroadcastOnline(w http.ResponseWriter, r *http.Request) {
-	go triggerBotWebhook("broadcast_online", nil)
+	go func() {
+		text := strings.Join([]string{
+			`✈️ *AnasFlightsV2 is now ONLINE and ready for lift\-off\!*`,
+			``,
+			`🚀 Our booking automation service is live and accepting transactions\.`,
+			`💳 Use /help to subscribe or top up your credits\.`,
+			``,
+			`_Safe travels\!_ 🌏`,
+		}, "\n")
+		broadcastToTelegramSubscribers(text)
+		// Also trigger the legacy webhook if configured (backward compat).
+		triggerBotWebhook("broadcast_online", nil)
+	}()
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
@@ -393,7 +448,26 @@ func triggerPriceUpdateBroadcast() {
 		logWarn("triggerPriceUpdateBroadcast: " + err.Error())
 		return
 	}
-	go triggerBotWebhook("price_update", packages)
+	go func() {
+		if len(packages) > 0 {
+			lines := []string{
+				`💰 *AnasFlightsV2 — Updated Credit Prices*`,
+				``,
+			}
+			for _, p := range packages {
+				if p.Active {
+					lines = append(lines, fmt.Sprintf(`🎟 *%s* — %s credits for *₱%s*`,
+						escMdV2(p.Name),
+						escMdV2(fmt.Sprintf("%d", p.Credits)),
+						escMdV2(fmt.Sprintf("%.2f", p.PricePHP))))
+				}
+			}
+			lines = append(lines, ``, `Tap /help to purchase credits\.`)
+			broadcastToTelegramSubscribers(strings.Join(lines, "\n"))
+		}
+		// Also trigger the legacy webhook if configured (backward compat).
+		triggerBotWebhook("price_update", packages)
+	}()
 }
 
 func packageIDFromPath(path string) int64 {
