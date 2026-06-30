@@ -52,6 +52,9 @@ mux.HandleFunc("/api/user/me", requireAuth("", userMeHandler))
 // Admin endpoints (require admin JWT)
 mux.HandleFunc("/api/admin/", requireAuth(roleAdmin, adminRouter))
 
+// Bot API endpoints (authenticated via X-Bot-Key header)
+mux.HandleFunc("/api/bot/", botAPIRouter)
+
 // Middleware chain: security headers → maintenance → rate limiter → router
 handler := secureHeaders(maintenanceMiddleware(rateLimit(requestLogger(mux))))
 

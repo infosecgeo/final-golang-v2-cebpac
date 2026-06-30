@@ -18,7 +18,10 @@ func adminRouter(w http.ResponseWriter, r *http.Request) {
 	// Enforce broadcast-role restrictions: only maintenance and config endpoints allowed.
 	if c := getCtxClaims(r); c != nil && c.AdminRole == roleBroadcast {
 		allowed := (path == "/config" && (r.Method == http.MethodGet || r.Method == http.MethodPut)) ||
-			(path == "/maintenance" && r.Method == http.MethodPost)
+			(path == "/maintenance" && r.Method == http.MethodPost) ||
+			(path == "/packages" && r.Method == http.MethodGet) ||
+			(path == "/broadcast-online" && r.Method == http.MethodPost) ||
+			(path == "/broadcast-prices" && r.Method == http.MethodPost)
 		if !allowed {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "insufficient permissions"})
 			return
@@ -67,6 +70,34 @@ func adminRouter(w http.ResponseWriter, r *http.Request) {
 	// Stats
 	case path == "/stats" && r.Method == http.MethodGet:
 		adminStats(w, r)
+
+	// Credit packages
+	case path == "/packages" && r.Method == http.MethodGet:
+		adminListPackages(w, r)
+	case path == "/packages" && r.Method == http.MethodPost:
+		adminCreatePackage(w, r)
+	case strings.HasPrefix(path, "/packages/") && r.Method == http.MethodPut:
+		id := packageIDFromPath(path)
+		adminUpdatePackage(w, r, id)
+	case strings.HasPrefix(path, "/packages/") && r.Method == http.MethodDelete:
+		id := packageIDFromPath(path)
+		adminDeletePackage(w, r, id)
+
+	// Purchase requests (read-only from admin panel)
+	case path == "/purchase-requests" && r.Method == http.MethodGet:
+		adminListPurchaseRequests(w, r)
+
+	// Broadcast
+	case path == "/broadcast-online" && r.Method == http.MethodPost:
+		adminBroadcastOnline(w, r)
+	case path == "/broadcast-prices" && r.Method == http.MethodPost:
+		list, err := dbListPackages(true)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		go triggerBotWebhook("price_update", list)
+		writeJSON(w, 200, map[string]bool{"ok": true})
 
 	// Admin user management
 	case path == "/users" && r.Method == http.MethodPost:
