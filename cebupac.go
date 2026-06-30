@@ -434,7 +434,7 @@ func runAkamaiChallenge() (tls_client.HttpClient, *cookiejar.Jar, error) {
 }
 
 // makeHPPPost sends the HPP POST to soar using an already-authenticated client.
-func makeHPPPost(client tls_client.HttpClient, xAuthToken, bearerToken, hppContent string) (int, string, error) {
+func makeHPPPost(client tls_client.HttpClient, xAuthToken, bearerToken, hppContent, userAgent string) (int, string, error) {
 	hppBody := hppContent
 
 	hppReq, err := http.NewRequest(http.MethodPost, soarURL+"/ceb-omnix-proxy-v3/v2/cpd/hpp", strings.NewReader(hppBody))
@@ -449,7 +449,7 @@ func makeHPPPost(client tls_client.HttpClient, xAuthToken, bearerToken, hppConte
 		"authorization":      {"Bearer " + bearerToken},
 		"sec-ch-ua":          {`"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"`},
 		"sec-ch-ua-mobile":   {"?0"},
-		"user-agent":         {getHPPUserAgent()},
+		"user-agent":         {userAgent},
 		"accept":             {"application/json, text/plain, */*"},
 		"content-type":       {"application/json"},
 		"origin":             {baseURL},
