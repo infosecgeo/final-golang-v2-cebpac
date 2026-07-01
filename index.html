@@ -415,13 +415,13 @@ const LS = {
 
 // Internal storage key mapping — maps element IDs to opaque storage keys
 const _sk = {
-  bearerToken: '_f1',
-  xAuthToken: '_f2',
-  hpp: '_f3',
-  hppUserAgent: '_f4',
-  lastLicenseKey: '_f5',
-  hideCreditModal: '_f6',
-  mode: '_f7',
+  bearerToken: '_k8x2a',
+  xAuthToken: '_m9p1b',
+  hpp: '_q3r7c',
+  hppUserAgent: '_w5n4d',
+  lastLicenseKey: '_j2v6e',
+  hideCreditModal: '_t1z8f',
+  mode: '_b4s0g',
 };
 
 let token = LS.get('token') || '';
@@ -607,7 +607,7 @@ function switchTab(name) {
 
 function restoreInputs() {
   ['bearerToken','xAuthToken','hpp','hppUserAgent'].forEach(id => {
-    const saved = LS.get(_sk[id] || id);
+    const saved = LS.get(_sk[id]);
     if (saved) document.getElementById(id).value = saved;
   });
   const savedMode = LS.get(_sk.mode);
@@ -616,7 +616,7 @@ function restoreInputs() {
 
 function persistInput(id) {
   const el = document.getElementById(id);
-  if (el) LS.set(_sk[id] || id, el.value);
+  if (el && _sk[id]) LS.set(_sk[id], el.value);
 }
 
 ['bearerToken','xAuthToken','hpp'].forEach(id => {
