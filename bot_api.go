@@ -41,6 +41,11 @@ func botAPIRouter(w http.ResponseWriter, r *http.Request) {
 		price := getConfigFloat("credit_price_php", 250.00)
 		writeJSON(w, 200, map[string]float64{"pricePerCredit": price})
 
+	// ── QR code URL for payments ──────────────────────────────────────────────
+	case path == "/qr-code-url" && r.Method == http.MethodGet:
+		url := getConfig("qr_code_url")
+		writeJSON(w, 200, map[string]string{"url": url})
+
 	// ── Check if Telegram user has a linked license ────────────────────────────
 	case strings.HasPrefix(path, "/licenses/check-telegram/") && r.Method == http.MethodGet:
 		tgUserID := strings.TrimPrefix(path, "/licenses/check-telegram/")

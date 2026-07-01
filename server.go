@@ -48,6 +48,7 @@ mux.HandleFunc("/api/logout", logoutHandler)
 // User endpoints (require user or admin JWT)
 mux.HandleFunc("/pay", requireAuth("", payHandler))
 mux.HandleFunc("/api/user/me", requireAuth("", userMeHandler))
+mux.HandleFunc("/api/user/transactions", requireAuth("", userTransactionsHandler))
 
 // Admin endpoints (require admin JWT)
 mux.HandleFunc("/api/admin/", requireAuth(roleAdmin, adminRouter))
@@ -321,6 +322,28 @@ json.NewEncoder(w).Encode(map[string]interface{}{
 "role":     c.Role,
 "username": c.Subject,
 })
+}
+
+func userTransactionsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	c := getCtxClaims(r)
+	if c == nil || c.Role != roleUser || c.LicenseID <= 0 {
+		json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+		return
+	}
+	list, err := dbListTransactionsByLicenseID(c.LicenseID, 200)
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	if list == nil {
+		list = []map[string]interface{}{}
+	}
+	json.NewEncoder(w).Encode(list)
 }
 
 func maskCard(cardNumber string) string {

@@ -559,6 +559,40 @@ func dbLogTransaction(licenseID *int64, cardMasked, result, recordLocator, passe
 	}
 }
 
+func dbListTransactionsByLicenseID(licenseID int64, limit int) ([]map[string]interface{}, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	rows, err := db.Query(
+		`SELECT id, card_masked, result, record_locator, passenger_name, message, created_at
+		 FROM transactions WHERE license_id = ? ORDER BY id DESC LIMIT ?`,
+		licenseID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []map[string]interface{}
+	for rows.Next() {
+		var id int
+		var cardMasked, result, message sql.NullString
+		var recordLocator, passengerName sql.NullString
+		var createdAt time.Time
+		if e := rows.Scan(&id, &cardMasked, &result, &recordLocator, &passengerName, &message, &createdAt); e != nil {
+			return nil, e
+		}
+		list = append(list, map[string]interface{}{
+			"id":             id,
+			"card_masked":    cardMasked.String,
+			"result":         result.String,
+			"record_locator": recordLocator.String,
+			"passenger_name": passengerName.String,
+			"message":        message.String,
+			"created_at":     createdAt,
+		})
+	}
+	return list, rows.Err()
+}
+
 // ── Credit Packages ───────────────────────────────────────────────────────────
 
 type CreditPackage struct {

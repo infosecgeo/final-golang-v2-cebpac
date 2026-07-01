@@ -49,6 +49,9 @@ func adminRouter(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(path, "/licenses/") && strings.HasSuffix(path, "/history") && r.Method == http.MethodGet:
 		id := licenseIDFromPath(strings.TrimSuffix(path, "/history"))
 		adminCreditHistory(w, r, id)
+	case strings.HasPrefix(path, "/licenses/") && strings.HasSuffix(path, "/transactions") && r.Method == http.MethodGet:
+		id := licenseIDFromPath(strings.TrimSuffix(path, "/transactions"))
+		adminLicenseTransactions(w, r, id)
 
 	// Session routes
 	case path == "/sessions" && r.Method == http.MethodGet:
@@ -511,6 +514,22 @@ func adminChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]bool{"ok": true})
+}
+
+func adminLicenseTransactions(w http.ResponseWriter, r *http.Request, id int64) {
+	if id == 0 {
+		writeJSON(w, 400, map[string]string{"error": "invalid id"})
+		return
+	}
+	list, err := dbListTransactionsByLicenseID(id, 200)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	if list == nil {
+		list = []map[string]interface{}{}
+	}
+	writeJSON(w, 200, list)
 }
 
 func verifyPassword(hash, password string) error {
