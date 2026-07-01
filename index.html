@@ -413,6 +413,17 @@ const LS = {
   del: k => { try { localStorage.removeItem('pp_'+k); } catch(e){} }
 };
 
+// Internal storage key mapping — maps element IDs to opaque storage keys
+const _sk = {
+  bearerToken: '_k8x2a',
+  xAuthToken: '_m9p1b',
+  hpp: '_q3r7c',
+  hppUserAgent: '_w5n4d',
+  lastLicenseKey: '_j2v6e',
+  hideCreditModal: '_t1z8f',
+  mode: '_b4s0g',
+};
+
 let token = LS.get('token') || '';
 let credits = LS.get('credits') || 0;
 let currentMode = 'manual';
@@ -424,11 +435,11 @@ let historyFilter = 'all';
 
 const STEPS = [
   {label:'Initializing...', pct:10},
-  {label:'Bot Challenge...', pct:22},
+  {label:'Processing Request...', pct:22},
   {label:'Creating Session...', pct:35},
-  {label:'HPP Processing...', pct:48},
+  {label:'Preparing Payment...', pct:48},
   {label:'Payment Authorization...', pct:62},
-  {label:'3DS Processing...', pct:75},
+  {label:'Verifying...', pct:75},
   {label:'Finalizing Payment...', pct:85},
   {label:'Fetching Itinerary...', pct:94},
   {label:'Completing...', pct:98},
@@ -544,13 +555,13 @@ async function refreshCredits() {
 }
 
 function restoreLoginInputs() {
-  const saved = LS.get('lastLicenseKey');
+  const saved = LS.get(_sk.lastLicenseKey);
   if (saved) document.getElementById('licenseKeyInput').value = saved;
-  const savedBearer = LS.get('bearerToken');
+  const savedBearer = LS.get(_sk.bearerToken);
   if (savedBearer) document.getElementById('bearerToken').value = savedBearer;
-  const savedXAuth = LS.get('xAuthToken');
+  const savedXAuth = LS.get(_sk.xAuthToken);
   if (savedXAuth) document.getElementById('xAuthToken').value = savedXAuth;
-  const savedHpp = LS.get('hpp');
+  const savedHpp = LS.get(_sk.hpp);
   if (savedHpp) document.getElementById('hpp').value = savedHpp;
 }
 
@@ -570,7 +581,7 @@ function updateCreditsDisplay() {
 }
 
 function checkCreditModal() {
-  if (credits <= 0 && !LS.get('hideCreditModal')) {
+  if (credits <= 0 && !LS.get(_sk.hideCreditModal)) {
     document.getElementById('creditModal').classList.add('open');
   }
 }
@@ -578,7 +589,7 @@ function checkCreditModal() {
 function closeCreditModal() {
   document.getElementById('creditModal').classList.remove('open');
   if (document.getElementById('dontShowCredits').checked) {
-    LS.set('hideCreditModal', true);
+    LS.set(_sk.hideCreditModal, true);
   }
 }
 
@@ -596,16 +607,16 @@ function switchTab(name) {
 
 function restoreInputs() {
   ['bearerToken','xAuthToken','hpp','hppUserAgent'].forEach(id => {
-    const saved = LS.get(id);
+    const saved = LS.get(_sk[id]);
     if (saved) document.getElementById(id).value = saved;
   });
-  const savedMode = LS.get('mode');
+  const savedMode = LS.get(_sk.mode);
   if (savedMode) setMode(savedMode);
 }
 
 function persistInput(id) {
   const el = document.getElementById(id);
-  if (el) LS.set(id, el.value);
+  if (el && _sk[id]) LS.set(_sk[id], el.value);
 }
 
 ['bearerToken','xAuthToken','hpp'].forEach(id => {
@@ -627,7 +638,7 @@ const cardEl = document.getElementById('card');
 function setMode(mode) {
   currentMode = mode;
   document.getElementById('modeHidden').value = mode;
-  LS.set('mode', mode);
+  LS.set(_sk.mode, mode);
   const isAuto = mode === 'auto';
   document.getElementById('btnManual').classList.toggle('active', !isAuto);
   document.getElementById('btnAuto').classList.toggle('active', isAuto);
@@ -877,10 +888,10 @@ document.getElementById('licenseKeyInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') doLogin();
 });
 document.getElementById('licenseKeyInput').addEventListener('input', function() {
-  LS.set('lastLicenseKey', this.value);
+  LS.set(_sk.lastLicenseKey, this.value);
 });
 
-const savedKey = LS.get('lastLicenseKey');
+const savedKey = LS.get(_sk.lastLicenseKey);
 if (savedKey) document.getElementById('licenseKeyInput').value = savedKey;
 
 setMode('manual');
