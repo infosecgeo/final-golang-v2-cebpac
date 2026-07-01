@@ -725,7 +725,10 @@ const configLabels = {
   telegram_payment_group: 'Telegram Payment Group ID',
   hpp_user_agent: 'HPP User Agent',
   qr_code_url: 'QR Code URL (for bot payments)',
+  script_link: 'Script Link',
 };
+
+const secretConfigKeys = ['api_key','telegram_bot_token','bot_api_key','webhook_secret'];
 
 async function loadConfig() {
   try {
@@ -756,6 +759,12 @@ function renderConfig() {
           <div class="toggle-thumb"></div>
         </label>
       </div>`;
+    } else if (secretConfigKeys.includes(key)) {
+      html += `<label>${label}</label>
+      <div style="display:flex;gap:6px;align-items:center">
+        <input type="password" id="cfg_${key}" value="${escHtml(val)}" placeholder="${label}" style="flex:1">
+        <button type="button" class="btn-sm btn-blue" style="white-space:nowrap;padding:6px 10px" onclick="toggleSecretVisibility('cfg_${key}',this)">Show</button>
+      </div>`;
     } else {
       html += `<label>${label}</label>
       <input type="text" id="cfg_${key}" value="${escHtml(val)}" placeholder="${label}">`;
@@ -763,6 +772,18 @@ function renderConfig() {
   }
   html += '</div>';
   form.innerHTML = html;
+}
+
+function toggleSecretVisibility(inputId, btn) {
+  const el = document.getElementById(inputId);
+  if (!el) return;
+  if (el.type === 'password') {
+    el.type = 'text';
+    btn.textContent = 'Hide';
+  } else {
+    el.type = 'password';
+    btn.textContent = 'Show';
+  }
 }
 
 async function saveConfig() {
