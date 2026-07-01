@@ -909,10 +909,11 @@ function exportAdminHistoryCSV() {
     }
     return true;
   });
+  const escCsv = v => `"${String(v||'').replace(/"/g,'""')}"`;
   const headers = ['ID','Card','Result','Locator','Passenger','Message','Date'];
-  const csv = [headers, ...rows.map(t => [
-    t.id||'', t.card_masked||'', t.result||'', t.record_locator||'', t.passenger_name||'', (t.message||'').replace(/,/g,' '), t.created_at ? new Date(t.created_at).toLocaleString() : ''
-  ])].map(r => r.join(',')).join('\n');
+  const csv = [headers.map(escCsv), ...rows.map(t => [
+    t.id||'', t.card_masked||'', t.result||'', t.record_locator||'', t.passenger_name||'', t.message||'', t.created_at ? new Date(t.created_at).toLocaleString() : ''
+  ].map(escCsv))].map(r => r.join(',')).join('\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv], {type:'text/csv'}));
   a.download = 'license_history.csv';

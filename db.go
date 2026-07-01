@@ -581,13 +581,13 @@ func dbListTransactionsByLicenseID(licenseID int64, limit int) ([]map[string]int
 			return nil, e
 		}
 		list = append(list, map[string]interface{}{
-			"id":            id,
-			"cardMasked":    cardMasked.String,
-			"result":        result.String,
-			"recordLocator": recordLocator.String,
-			"passengerName": passengerName.String,
-			"message":       message.String,
-			"createdAt":     createdAt,
+			"id":             id,
+			"card_masked":    cardMasked.String,
+			"result":         result.String,
+			"record_locator": recordLocator.String,
+			"passenger_name": passengerName.String,
+			"message":        message.String,
+			"created_at":     createdAt,
 		})
 	}
 	return list, rows.Err()
