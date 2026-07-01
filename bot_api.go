@@ -46,6 +46,11 @@ func botAPIRouter(w http.ResponseWriter, r *http.Request) {
 		url := getConfig("qr_code_url")
 		writeJSON(w, 200, map[string]string{"url": url})
 
+	// ── Script link (shown only to licensed users) ────────────────────────────
+	case path == "/script-link" && r.Method == http.MethodGet:
+		link := getConfig("script_link")
+		writeJSON(w, 200, map[string]string{"url": link})
+
 	// ── Check if Telegram user has a linked license ────────────────────────────
 	case strings.HasPrefix(path, "/licenses/check-telegram/") && r.Method == http.MethodGet:
 		tgUserID := strings.TrimPrefix(path, "/licenses/check-telegram/")
