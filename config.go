@@ -31,6 +31,7 @@ var configDefaults = map[string]string{
 	"bot_api_key":             "",
 	"credit_price_php":        "250.00",
 	"qr_code_url":             "",
+	"script_link":             "",
 }
 
 var (

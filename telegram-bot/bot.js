@@ -199,6 +199,17 @@ async function sendDashboard(chatId, userId, username) {
     return;
   }
 
+  // Fetch the script link (only shown to licensed users).
+  let scriptUrl = '';
+  try {
+    const linkData = await apiGet('/api/bot/script-link');
+    if (linkData && linkData.url) {
+      scriptUrl = linkData.url;
+    }
+  } catch (e) {
+    console.warn('[WARN] sendDashboard fetch script-link:', e.message);
+  }
+
   const text = [
     `✈️ *AnasFlightsV2 — Dashboard*`,
     ``,
@@ -209,19 +220,27 @@ async function sendDashboard(chatId, userId, username) {
     `What would you like to do?`,
   ].join('\n');
 
+  const inlineKeyboard = [
+    [
+      { text: '💰 Check Balance',       callback_data: 'check_balance' },
+      { text: '📋 Transaction History', callback_data: 'view_history' },
+    ],
+    [
+      { text: '➕ Top-up Credits',      callback_data: 'topup_credits' },
+      { text: '🔄 Refresh',             callback_data: 'refresh_account' },
+    ],
+  ];
+
+  if (scriptUrl) {
+    inlineKeyboard.push([
+      { text: '🔗 Access Script', url: scriptUrl },
+    ]);
+  }
+
   await bot.sendMessage(chatId, text, {
     parse_mode: 'MarkdownV2',
     reply_markup: {
-      inline_keyboard: [
-        [
-          { text: '💰 Check Balance',       callback_data: 'check_balance' },
-          { text: '📋 Transaction History', callback_data: 'view_history' },
-        ],
-        [
-          { text: '➕ Top-up Credits',      callback_data: 'topup_credits' },
-          { text: '🔄 Refresh',             callback_data: 'refresh_account' },
-        ],
-      ],
+      inline_keyboard: inlineKeyboard,
     },
   });
 }
