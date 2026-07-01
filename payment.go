@@ -960,12 +960,12 @@ func processManualPayment(
 		// we can capture a direct Location header (AMEX / JCB path) as well as read the
 		// HTML body for TransactionId (Visa / Mastercard path).
 		noRedirTerm := newNoRedirectClient()
-		termReq, termReqErr := http.NewRequest(http.MethodPost,
+		termReq, err := http.NewRequest(http.MethodPost,
 			"https://centinelapi.cardinalcommerce.com/V1/Cruise/TermRedirection",
 			strings.NewReader("McsId="+url.QueryEscape(finalMcsID)+"&CardinalJWT=&Error="),
 		)
-		if termReqErr != nil {
-			return false, "", nil, fmt.Errorf("cardinal TermRedirection req: %w", termReqErr)
+		if err != nil {
+			return false, "", nil, fmt.Errorf("cardinal TermRedirection req: %w", err)
 		}
 		termReq.Header.Set("content-type", "application/x-www-form-urlencoded")
 		termReq.Header.Set("user-agent", ua)
