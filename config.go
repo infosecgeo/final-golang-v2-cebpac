@@ -30,6 +30,7 @@ var configDefaults = map[string]string{
 	"hpp_user_agent":          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
 	"bot_api_key":             "",
 	"credit_price_php":        "250.00",
+	"qr_code_url":             "",
 }
 
 var (

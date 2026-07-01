@@ -263,6 +263,18 @@ async function sendQRAndAskReceipt(chatId, userId, count, amountPHP, requestType
       }
     }
   }
+  // Fallback: try the qr_code_url from system config
+  if (!qrSent && API_URL) {
+    try {
+      const data = await apiGet('/api/bot/qr-code-url');
+      if (data && data.url) {
+        await bot.sendPhoto(chatId, data.url, { caption, parse_mode: 'MarkdownV2' });
+        qrSent = true;
+      }
+    } catch (e) {
+      console.error('[ERROR] sendPhoto (config qr_code_url) failed:', e.message);
+    }
+  }
   if (!qrSent) {
     await bot.sendMessage(chatId, caption, { parse_mode: 'MarkdownV2' });
   }

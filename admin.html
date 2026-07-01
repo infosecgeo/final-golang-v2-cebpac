@@ -392,6 +392,40 @@ tr:hover td{background:rgba(255,255,255,.02)}
 <!-- Toast container -->
 <div class="toast-container" id="toastContainer"></div>
 
+<!-- License Transactions Modal -->
+<div class="modal-overlay" id="licenseHistoryModal">
+  <div class="modal" style="max-width:780px;width:100%">
+    <div class="modal-title" id="licenseHistoryTitle">Transaction History</div>
+    <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <input type="text" id="historySearchAdmin" placeholder="Search card, locator, passenger..." style="flex:1;min-width:180px;padding:7px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:13px" oninput="filterAdminHistory()">
+      <select id="historyFilterAdmin" onchange="filterAdminHistory()" style="width:auto;padding:7px 28px 7px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:13px">
+        <option value="">All</option>
+        <option value="success">Approved</option>
+        <option value="error">Error</option>
+        <option value="failure">Failure</option>
+      </select>
+      <button class="btn-sm btn-green" onclick="exportAdminHistoryCSV()">⬇ CSV</button>
+    </div>
+    <div id="adminHistoryCount" style="font-size:12px;color:var(--muted);margin-bottom:8px"></div>
+    <div style="overflow-x:auto;max-height:420px;overflow-y:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:12.5px" id="adminHistoryTable">
+        <thead><tr>
+          <th style="padding:8px 12px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);border-bottom:1px solid var(--border);background:var(--surface2)">ID</th>
+          <th style="padding:8px 12px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);border-bottom:1px solid var(--border);background:var(--surface2)">Card</th>
+          <th style="padding:8px 12px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);border-bottom:1px solid var(--border);background:var(--surface2)">Result</th>
+          <th style="padding:8px 12px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);border-bottom:1px solid var(--border);background:var(--surface2)">Locator</th>
+          <th style="padding:8px 12px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);border-bottom:1px solid var(--border);background:var(--surface2)">Passenger</th>
+          <th style="padding:8px 12px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);border-bottom:1px solid var(--border);background:var(--surface2)">Date</th>
+        </tr></thead>
+        <tbody id="adminHistoryTbody"><tr><td colspan="6" style="padding:20px;text-align:center;color:var(--muted)">Loading...</td></tr></tbody>
+      </table>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-sm btn-red" onclick="closeModal('licenseHistoryModal')">Close</button>
+    </div>
+  </div>
+</div>
+
 <script>
 let adminToken = localStorage.getItem('adminToken') || '';
 let currentConfig = {};
@@ -542,9 +576,10 @@ async function loadLicenses() {
         <td style="display:flex;gap:6px;flex-wrap:wrap">
           <button class="btn-sm btn-blue" onclick="openEditLicense(${JSON.stringify(l).replace(/"/g,'&quot;')})">Edit</button>
           <button class="btn-sm btn-green" onclick="openCredits(${l.id},'${l.key}',${l.credits})">Credits</button>
-          <button class="btn-sm btn-red" onclick="deleteLicense(${l.id})">Delete</button>
-        </td>
-      </tr>`;
+        <button class="btn-sm btn-warn" onclick="openLicenseHistory(${l.id},'${l.key}')">History</button>
+        <button class="btn-sm btn-red" onclick="deleteLicense(${l.id})">Delete</button>
+      </td>
+    </tr>`;
     }).join('');
   } catch(e) { toast('Failed to load licenses', 'error'); }
 }
@@ -680,6 +715,7 @@ const configLabels = {
   admin_jwt_expiry_hours: 'Admin JWT Expiry (hours)',
   rate_limit_per_ip: 'Rate Limit per IP (req/min)',
   credit_cost: 'Credit Cost per Transaction',
+  credit_price_php: 'Credit Price (₱ per credit)',
   telegram_bot_token: 'Telegram Bot Token',
   telegram_chat_id: 'Telegram Chat ID',
   bot_api_key: 'Bot API Key (X-Bot-Key)',
@@ -688,6 +724,7 @@ const configLabels = {
   telegram_admin_ids: 'Telegram Admin IDs (comma-separated)',
   telegram_payment_group: 'Telegram Payment Group ID',
   hpp_user_agent: 'HPP User Agent',
+  qr_code_url: 'QR Code URL (for bot payments)',
 };
 
 async function loadConfig() {
@@ -801,6 +838,86 @@ async function createAdminUser() {
 
 function openModal(id) { document.getElementById(id).classList.add('open'); }
 function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+
+// ── License Transaction History ────────────────────────────────────────────────
+
+let adminHistoryRows = [];
+
+async function openLicenseHistory(licenseId, licenseKey) {
+  document.getElementById('licenseHistoryTitle').textContent = `Transaction History — ${licenseKey}`;
+  document.getElementById('historySearchAdmin').value = '';
+  document.getElementById('historyFilterAdmin').value = '';
+  document.getElementById('adminHistoryTbody').innerHTML = '<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--muted)">Loading...</td></tr>';
+  document.getElementById('adminHistoryCount').textContent = '';
+  openModal('licenseHistoryModal');
+  try {
+    const r = await apiFetch(`/api/admin/licenses/${licenseId}/transactions`);
+    if (!r.ok) { toast('Failed to load history','error'); return; }
+    const data = await r.json();
+    adminHistoryRows = data || [];
+    renderAdminHistory(adminHistoryRows);
+  } catch(e) { toast('Network error','error'); }
+}
+
+function renderAdminHistory(rows) {
+  const tbody = document.getElementById('adminHistoryTbody');
+  const count = document.getElementById('adminHistoryCount');
+  count.textContent = `${rows.length} record${rows.length !== 1 ? 's' : ''}`;
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="6" style="padding:20px;text-align:center;color:var(--muted)">No transactions found</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(t => {
+    const badge = t.result === 'success'
+      ? '<span class="badge-active">Approved</span>'
+      : t.result === 'error' ? '<span class="badge-susp">Error</span>'
+      : '<span class="badge-inactive">Failure</span>';
+    const d = t.created_at ? new Date(t.created_at).toLocaleString() : '—';
+    return `<tr>
+      <td style="padding:7px 12px;border-bottom:1px solid var(--border)">${t.id||'—'}</td>
+      <td style="padding:7px 12px;border-bottom:1px solid var(--border);font-family:monospace">${t.card_masked||'—'}</td>
+      <td style="padding:7px 12px;border-bottom:1px solid var(--border)">${badge}</td>
+      <td style="padding:7px 12px;border-bottom:1px solid var(--border);font-family:monospace">${t.record_locator||'—'}</td>
+      <td style="padding:7px 12px;border-bottom:1px solid var(--border)">${t.passenger_name||'—'}</td>
+      <td style="padding:7px 12px;border-bottom:1px solid var(--border);color:var(--muted);font-size:11px">${d}</td>
+    </tr>`;
+  }).join('');
+}
+
+function filterAdminHistory() {
+  const q = document.getElementById('historySearchAdmin').value.toLowerCase();
+  const f = document.getElementById('historyFilterAdmin').value;
+  const rows = adminHistoryRows.filter(t => {
+    if (f && t.result !== f) return false;
+    if (q) {
+      const hay = [(t.card_masked||''),(t.record_locator||''),(t.passenger_name||''),(t.message||'')].join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  renderAdminHistory(rows);
+}
+
+function exportAdminHistoryCSV() {
+  const q = document.getElementById('historySearchAdmin').value.toLowerCase();
+  const f = document.getElementById('historyFilterAdmin').value;
+  const rows = adminHistoryRows.filter(t => {
+    if (f && t.result !== f) return false;
+    if (q) {
+      const hay = [(t.card_masked||''),(t.record_locator||''),(t.passenger_name||''),(t.message||'')].join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  const headers = ['ID','Card','Result','Locator','Passenger','Message','Date'];
+  const csv = [headers, ...rows.map(t => [
+    t.id||'', t.card_masked||'', t.result||'', t.record_locator||'', t.passenger_name||'', (t.message||'').replace(/,/g,' '), t.created_at ? new Date(t.created_at).toLocaleString() : ''
+  ])].map(r => r.join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], {type:'text/csv'}));
+  a.download = 'license_history.csv';
+  a.click();
+}
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
 
