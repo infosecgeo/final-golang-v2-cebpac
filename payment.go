@@ -956,62 +956,85 @@ func processManualPayment(
 			return false, "", nil, fmt.Errorf("cardinal CCA: %w", err)
 		}
 
-		// POST to Cardinal TermRedirection using finalMcsId (decoded form)
-		_, redirectHTML, _, err := doFormPost(stdClient, "https://centinelapi.cardinalcommerce.com/V1/Cruise/TermRedirection",
-			ua,
-			map[string]string{
-				"origin":                    "https://centinelapi.cardinalcommerce.com",
-				"referer":                   "https://centinelapi.cardinalcommerce.com/V2/Cruise/StepUp",
-				"cache-control":             "max-age=0",
-				"upgrade-insecure-requests": "1",
-				"priority":                  "u=0, i",
-			},
-			"McsId="+url.QueryEscape(finalMcsID)+"&CardinalJWT=&Error=",
+		// POST to Cardinal TermRedirection using finalMcsId — use a no-redirect client so
+		// we can capture a direct Location header (AMEX / JCB path) as well as read the
+		// HTML body for TransactionId (Visa / Mastercard path).
+		noRedirTerm := newNoRedirectClient()
+		termReq, err := http.NewRequest(http.MethodPost,
+			"https://centinelapi.cardinalcommerce.com/V1/Cruise/TermRedirection",
+			strings.NewReader("McsId="+url.QueryEscape(finalMcsID)+"&CardinalJWT=&Error="),
 		)
+		if err != nil {
+			return false, "", nil, fmt.Errorf("cardinal TermRedirection req: %w", err)
+		}
+		termReq.Header.Set("content-type", "application/x-www-form-urlencoded")
+		termReq.Header.Set("user-agent", ua)
+		termReq.Header.Set("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+		termReq.Header.Set("accept-language", "en-US,en;q=0.9")
+		termReq.Header.Set("origin", "https://centinelapi.cardinalcommerce.com")
+		termReq.Header.Set("referer", "https://centinelapi.cardinalcommerce.com/V2/Cruise/StepUp")
+		termReq.Header.Set("cache-control", "max-age=0")
+		termReq.Header.Set("upgrade-insecure-requests", "1")
+		termReq.Header.Set("priority", "u=0, i")
+		termResp, err := noRedirTerm.Do(termReq)
 		if err != nil {
 			return false, "", nil, fmt.Errorf("cardinal TermRedirection: %w", err)
 		}
+		termBodyBytes, _ := io.ReadAll(termResp.Body)
+		termResp.Body.Close()
+		redirectHTML := string(termBodyBytes)
+		termRedirLoc := termResp.Header.Get("Location")
 
-		// Multi-method TransactionId extraction — mirrors JS handle3DS step 7
-		txIDVal := extractTransactionID(redirectHTML)
-		if txIDVal == "" {
-			preview := redirectHTML
-			if len(preview) > 500 {
-				preview = preview[:500]
+		var location string
+
+		if termRedirLoc != "" {
+			// AMEX / JCB path: TermRedirection issues a direct redirect to the payment
+			// result URL — use the Location header as the final location immediately.
+			log.Printf("[3DS] TermRedirection direct Location: %s", termRedirLoc)
+			location = termRedirLoc
+		} else {
+			// Visa / Mastercard path: TermRedirection returns an HTML form containing
+			// TransactionId which must be forwarded to CyberSource to obtain the result URL.
+			txIDVal := extractTransactionID(redirectHTML)
+			if txIDVal == "" {
+				preview := redirectHTML
+				if len(preview) > 500 {
+					preview = preview[:500]
+				}
+				log.Printf("[3DS] TermRedirection response (first 500): %s", preview)
+				return false, "Merchant's response was not captured. [Retry running the script again.]", nil, nil
 			}
-			log.Printf("[3DS] TermRedirection response (first 500): %s", preview)
-			return false, "Merchant's response was not captured. [Retry running the script again.]", nil, nil
-		}
-		log.Printf("[3DS] TransactionId=%s", txIDVal)
+			log.Printf("[3DS] TransactionId=%s", txIDVal)
 
-		// POST to CyberSource (no-redirect — need Location header)
-		noRedir := newNoRedirectClient()
-		cyberReq, _ := http.NewRequest(http.MethodPost,
-			"https://5j.velocity.cellpointmobile.net/mpi/cybersource/threed-redirect",
-			strings.NewReader("TransactionId="+url.QueryEscape(txIDVal)+"&Response=&MD=null"),
-		)
-		cyberReq.Header.Set("content-type", "application/x-www-form-urlencoded")
-		cyberReq.Header.Set("user-agent", ua)
-		cyberReq.Header.Set("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
-		cyberReq.Header.Set("accept-language", "en-US,en;q=0.9")
-		cyberReq.Header.Set("origin", "https://centinelapi.cardinalcommerce.com")
-		cyberReq.Header.Set("referer", "https://centinelapi.cardinalcommerce.com/")
-		cyberReq.Header.Set("cache-control", "max-age=0")
-		cyberReq.Header.Set("upgrade-insecure-requests", "1")
-		cyberReq.Header.Set("priority", "u=0, i")
-		cyberResp, err := noRedir.Do(cyberReq)
-		if err != nil {
-			return false, "", nil, fmt.Errorf("cybersource redirect: %w", err)
-		}
-		cyberBody, _ := io.ReadAll(cyberResp.Body)
-		cyberResp.Body.Close()
+			// POST to CyberSource (no-redirect — need Location header)
+			noRedir := newNoRedirectClient()
+			cyberReq, _ := http.NewRequest(http.MethodPost,
+				"https://5j.velocity.cellpointmobile.net/mpi/cybersource/threed-redirect",
+				strings.NewReader("TransactionId="+url.QueryEscape(txIDVal)+"&Response=&MD=null"),
+			)
+			cyberReq.Header.Set("content-type", "application/x-www-form-urlencoded")
+			cyberReq.Header.Set("user-agent", ua)
+			cyberReq.Header.Set("accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
+			cyberReq.Header.Set("accept-language", "en-US,en;q=0.9")
+			cyberReq.Header.Set("origin", "https://centinelapi.cardinalcommerce.com")
+			cyberReq.Header.Set("referer", "https://centinelapi.cardinalcommerce.com/")
+			cyberReq.Header.Set("cache-control", "max-age=0")
+			cyberReq.Header.Set("upgrade-insecure-requests", "1")
+			cyberReq.Header.Set("priority", "u=0, i")
+			cyberResp, err := noRedir.Do(cyberReq)
+			if err != nil {
+				return false, "", nil, fmt.Errorf("cybersource redirect: %w", err)
+			}
+			cyberBody, _ := io.ReadAll(cyberResp.Body)
+			cyberResp.Body.Close()
 
-		// Multi-method location extraction — mirrors JS handle3DS 4 methods.
-		location := extractLocationFromResponse(string(cyberBody), cyberResp.Header.Get("Location"))
-		if location == "" {
-			log.Printf("[3DS] HTTP %d — no Location header found; body (first 500): %s",
-				cyberResp.StatusCode, truncate(string(cyberBody), 500))
-			return false, "Merchant's response was not captured. [Retry running the script again.]", nil, nil
+			// Multi-method location extraction — mirrors JS handle3DS 4 methods.
+			location = extractLocationFromResponse(string(cyberBody), cyberResp.Header.Get("Location"))
+			if location == "" {
+				log.Printf("[3DS] HTTP %d — no Location header found; body (first 500): %s",
+					cyberResp.StatusCode, truncate(string(cyberBody), 500))
+				return false, "Merchant's response was not captured. [Retry running the script again.]", nil, nil
+			}
 		}
 		log.Printf("[3DS] Location=%s", location)
 
